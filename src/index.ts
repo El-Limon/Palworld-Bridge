@@ -1309,7 +1309,7 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
  */
 function handleListBans() {
   return [...banLedger.values()].map((record) => ({
-    player: { gameId: record.gameId, name: record.name },
+    player: { gameId: record.gameId, name: record.name, ...palworldIdentity(record.gameId) },
     reason: record.reason,
     createdAt: record.createdAt,
     expiresAt: record.expiresAt
