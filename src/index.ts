@@ -552,6 +552,16 @@ app.post('/chat', async (req, res) => {
       case 'player_disconnect':
         logger.info(`[EVENT] Player disconnected: ${playerName}`);
         if (isConnectedToTakaro) {
+          // The mod's ReceiveEndPlay hook also fires when the player's pawn is replaced
+          // (join -> spawn, respawn), not only on logout. Trust REST: if the player is
+          // still listed, it was not a disconnect. A real one is still caught by the
+          // REST poll once the player drops off the list.
+          const online = await handleGetPlayers();
+          if (online.some((p: any) => p.name.toLowerCase() === playerName.toLowerCase()
+            || String(p.accountName || '').toLowerCase() === playerName.toLowerCase())) {
+            logger.info(`[EVENT] Ignoring disconnect for ${playerName}: still online per REST (pawn replaced)`);
+            break;
+          }
           // Use cached gameId for disconnect (player is offline now)
           const cachedPlayer = Array.from(playerCache.values()).find(p =>
             p.name.toLowerCase() === playerName.toLowerCase()
