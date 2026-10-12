@@ -56,3 +56,15 @@ test('maps Palworld userIds to the Takaro identity fields', async () => {
     assert.match(palworldIdentity(id).platformId, /^[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+$/);
   }
 });
+
+test('rounds the REST float ping to the integer Takaro stores', async () => {
+  const { takaroPing } = await import('../dist/player-args.js');
+  assert.equal(takaroPing(27.321428298950195), 27);
+  assert.equal(takaroPing(23.9), 24);
+  assert.equal(takaroPing(0), 0);
+  assert.equal(takaroPing('12.6'), 13);
+  assert.equal(takaroPing(undefined), undefined);
+  assert.equal(takaroPing(null), undefined);
+  assert.equal(takaroPing(NaN), undefined);
+  assert.equal(takaroPing(-1), undefined);
+});

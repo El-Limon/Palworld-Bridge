@@ -1,6 +1,6 @@
 {
   "name": "palworld-bridge",
-  "version": "1.7.8-elimon.pitstg1",
+  "version": "1.7.8-elimon.pitstg2",
   "main": "index.js",
   "scripts": {
     "build": "tsc",

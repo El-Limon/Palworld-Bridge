@@ -131,3 +131,15 @@ export function palworldIdentity(userId: string): PalworldIdentity {
   if (/^[A-Za-z0-9_-]+$/.test(id)) return { platformId: `palworld:${id}` };
   return {};
 }
+
+/**
+ * Palworld REST reports ping as a float average (e.g. 27.3214). Takaro stores ping in an
+ * integer column and writes it in the same UPDATE as the player's position, so a fractional
+ * ping makes that whole update fail and the position on the player record goes stale.
+ * Send a whole number of milliseconds, or nothing.
+ */
+export function takaroPing(value: unknown): number | undefined {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (value === null || value === undefined || value === '' || !Number.isFinite(n) || n < 0) return undefined;
+  return Math.round(n);
+}

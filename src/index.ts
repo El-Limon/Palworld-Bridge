@@ -12,7 +12,7 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 // Map internal item code (FName, e.g. "Wood") -> English display name from the
 // embedded catalog, for building Takaro IItemDTO rows (code + name required).
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
-import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity } from './player-args';
+import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
 
 const execPromise = promisify(exec);
@@ -1261,7 +1261,7 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
       ...palworldIdentity(String(player.userId)),
       palworldPlayerId: String(player.playerId || ''), // GUID from Palworld API - matches PlayerState.PlayerId in UE4SS
       ip: player.ip || undefined,
-      ping: player.ping !== undefined ? player.ping : undefined,
+      ping: takaroPing(player.ping),
       positionX: player.location_x !== undefined ? player.location_x : (player.x !== undefined ? player.x : undefined),
       positionY: player.location_y !== undefined ? player.location_y : (player.y !== undefined ? player.y : undefined),
       positionZ: player.location_z !== undefined ? player.location_z : (player.z !== undefined ? player.z : undefined)
