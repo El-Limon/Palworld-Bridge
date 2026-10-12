@@ -549,41 +549,13 @@ app.post('/chat', async (req, res) => {
         break;
 
       case 'player_connect':
-        logger.info(`[EVENT] Player connected: ${playerName}`);
-        if (isConnectedToTakaro) {
-          // Fetch current players to get gameId for the connected player
-          const players = await handleGetPlayers();
-          const connectedPlayer = players.find((p: any) =>
-            p.name.toLowerCase() === playerName.toLowerCase()
-          );
-          if (connectedPlayer) {
-            await sendPlayerEvent('player-connected', connectedPlayer.name, timestamp, connectedPlayer.gameId);
-          } else {
-            logger.warn(`Could not find gameId for connected player: ${playerName}`);
-          }
-        }
-        break;
-
       case 'player_disconnect':
-        logger.info(`[EVENT] Player disconnected: ${playerName}`);
-        if (isConnectedToTakaro) {
-          // The mod's ReceiveEndPlay hook also fires when the player's pawn is replaced
-          // (join -> spawn, respawn), not only on logout. Trust REST: if the player is
-          // still listed, it was not a disconnect. A real one is still caught by the
-          // REST poll once the player drops off the list.
-          const online = await handleGetPlayers();
-          if (online.some((p: any) => p.name.toLowerCase() === playerName.toLowerCase()
-            || String(p.accountName || '').toLowerCase() === playerName.toLowerCase())) {
-            logger.info(`[EVENT] Ignoring disconnect for ${playerName}: still online per REST (pawn replaced)`);
-            break;
-          }
-          // Use cached gameId for disconnect (player is offline now)
-          const cachedPlayer = Array.from(playerCache.values()).find(p =>
-            p.name.toLowerCase() === playerName.toLowerCase()
-          );
-          const gameId = cachedPlayer?.gameId;
-          await sendPlayerEvent('player-disconnected', playerName, timestamp, gameId);
-        }
+        // player-connected / player-disconnected are owned by the REST poll delta in
+        // handleGetPlayers(true). The mod's messages only refresh the player cache:
+        // emitting here too sent every join twice, and ReceiveEndPlay also fires when
+        // the pawn is replaced (join -> spawn, respawn), which is no disconnect at all.
+        logger.info(`[EVENT] Mod reports ${type === 'player_connect' ? 'connect' : 'disconnect'}: ${playerName} (the REST poll sends the Takaro event)`);
+        await handleGetPlayers();
         break;
 
       case 'player_death':
