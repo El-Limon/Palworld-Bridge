@@ -13,6 +13,7 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 // embedded catalog, for building Takaro IItemDTO rows (code + name required).
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity } from './player-args';
+import { resolveTakaroWsUrl } from './takaro-url';
 
 const execPromise = promisify(exec);
 
@@ -63,6 +64,10 @@ REGISTRATION_TOKEN=Paste your registration token here
 
 # HTTP port for the in-game chat mod (leave as 3001).
 HTTP_PORT=3001
+
+# Takaro WebSocket endpoint. Leave commented out for app.takaro.io; set it only
+# for a staging or self-hosted Takaro.
+# TAKARO_WS_URL=wss://connect.takaro.io/
 
 # Set to 1 for verbose troubleshooting logs: every WebSocket frame exchanged
 # with Takaro is written to the log file (your registration token is redacted).
@@ -318,7 +323,7 @@ setInterval(() => {
 }, 60000); // Check every minute
 
 // Configuration
-const TAKARO_WS_URL = 'wss://connect.takaro.io/';
+const TAKARO_WS_URL = resolveTakaroWsUrl(process.env.TAKARO_WS_URL);
 const SERVER_NAME = process.env.SERVER_NAME || '';
 const REGISTRATION_TOKEN = process.env.REGISTRATION_TOKEN || '';
 

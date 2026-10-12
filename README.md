@@ -278,6 +278,9 @@ PALWORLD_PASSWORD=your-admin-password
 
 # Optional: verbose troubleshooting logs (default 0)
 TAKARO_DEBUG=0
+
+# Optional: another Takaro instance (default wss://connect.takaro.io/)
+# TAKARO_WS_URL=wss://connect.takaro.io/
 ```
 
 `TAKARO_DEBUG=1` sets the log level to debug and writes every WebSocket frame
