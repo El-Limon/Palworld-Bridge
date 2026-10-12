@@ -30,6 +30,10 @@ HTTP_PORT=3001
 # set it only for a staging or self-hosted Takaro.
 # TAKARO_WS_URL=wss://connect.takaro.io/
 
+# Takaro protocol. 1 (default) offers protocol version 1 (map, acknowledged
+# events) and falls back to 0 on an older Takaro; 0 keeps version 0.
+# TAKARO_PROTOCOL=1
+
 # When a newer bridge version is released on GitHub, the bridge logs a notice
 # at startup AND announces it in-game every hour. Set this to false to keep the
 # startup log notice but stop the in-game announcements.

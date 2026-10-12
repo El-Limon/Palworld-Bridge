@@ -14,6 +14,7 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
+import { buildManifest, dimensionForPosition, EventStream, identifyError, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
 
 const execPromise = promisify(exec);
 
@@ -68,6 +69,10 @@ HTTP_PORT=3001
 # Takaro WebSocket endpoint. Leave commented out for app.takaro.io; set it only
 # for a staging or self-hosted Takaro.
 # TAKARO_WS_URL=wss://connect.takaro.io/
+
+# Takaro protocol. 1 (default) offers protocol version 1 (map Dimensions,
+# acknowledged events) and falls back to 0 on an older Takaro. 0 keeps version 0.
+# TAKARO_PROTOCOL=1
 
 # Set to 1 for verbose troubleshooting logs: every WebSocket frame exchanged
 # with Takaro is written to the log file (your registration token is redacted).
@@ -326,6 +331,7 @@ setInterval(() => {
 const TAKARO_WS_URL = resolveTakaroWsUrl(process.env.TAKARO_WS_URL);
 const SERVER_NAME = process.env.SERVER_NAME || '';
 const REGISTRATION_TOKEN = process.env.REGISTRATION_TOKEN || '';
+const TAKARO_PROTOCOL = resolveProtocolSetting(process.env.TAKARO_PROTOCOL);
 
 // Palworld REST API Configuration
 const PALWORLD_HOST = process.env.PALWORLD_HOST || '127.0.0.1';
@@ -341,6 +347,10 @@ const HTTP_PORT = parseInt(process.env.HTTP_PORT || '3001', 10);
 let takaroWs: WebSocket | null = null;
 let isConnectedToTakaro = false;
 let reconnectTimeout: NodeJS.Timeout | null = null;
+// Protocol version negotiated on the current connection (0 until identified, or on an old Takaro).
+let protocolVersion: 0 | 1 = 0;
+// Version 1 event stream: one per process, kept across reconnects.
+const eventStream = new EventStream();
 
 // Palworld API client
 let palworldApi: AxiosInstance;
@@ -891,6 +901,7 @@ function connectToTakaro() {
   takaroWs.on('close', () => {
     logger.warn('Disconnected from Takaro');
     isConnectedToTakaro = false;
+    protocolVersion = 0;
     scheduleReconnect();
   });
 
@@ -917,6 +928,11 @@ function sendIdentify() {
 
   if (REGISTRATION_TOKEN) {
     identifyMessage.payload.registrationToken = REGISTRATION_TOKEN;
+  }
+
+  if (TAKARO_PROTOCOL === 1) {
+    identifyMessage.payload.protocolVersions = [0, 1];
+    identifyMessage.payload.capabilities = buildManifest();
   }
 
   logger.info('Sending identify message to Takaro');
@@ -946,6 +962,20 @@ function handleTakaroMessage(message: any) {
       sendPong();
       break;
 
+    case 'eventAck': {
+      const dropped = eventStream.ack(message.payload?.streamId, message.payload?.upTo);
+      if (dropped) logger.debug(`[V1] eventAck upTo ${message.payload?.upTo}: ${dropped} event(s) done`);
+      break;
+    }
+
+    case 'eventError':
+      logger.error(`[V1] Takaro rejected event seq ${message.payload?.seq}: ${JSON.stringify(message.error)}`);
+      break;
+
+    case 'capabilitiesResponse':
+      if (message.error) logger.error(`[V1] Takaro rejected the capability manifest: ${JSON.stringify(message.error)}`);
+      break;
+
     case 'error':
       logger.error(`Takaro error: ${JSON.stringify(message.payload || message)}`);
       break;
@@ -959,9 +989,10 @@ function handleTakaroMessage(message: any) {
  * Handle identify response from Takaro
  */
 function handleIdentifyResponse(message: any) {
-  if (message.payload?.error) {
+  const failure = identifyError(message);
+  if (failure) {
     identifyFailures++;
-    logger.error(`Identification failed: ${JSON.stringify(message.payload.error, null, 2)}`);
+    logger.error(`Identification failed: ${JSON.stringify(failure, null, 2)}`);
     logger.error(`Full message: ${JSON.stringify(message, null, 2)}`);
 
     if (identifyFailures >= IDENTIFY_FAILURE_HINT_AFTER) {
@@ -983,10 +1014,17 @@ function handleIdentifyResponse(message: any) {
       logger.debug(`Failed to close socket after identify failure: ${error.message}`);
     }
   } else {
-    logger.info('Successfully identified with Takaro');
+    protocolVersion = negotiatedVersion(message);
+    logger.info(`Successfully identified with Takaro (protocol version ${protocolVersion}${protocolVersion === 1 ? `, map Dimensions ${MAP_DIMENSIONS.map((d) => d.id).join(', ')}` : ''})`);
     isConnectedToTakaro = true;
     identifyFailures = 0;
     reconnectAttempts = 0;
+    if (protocolVersion === 1) {
+      // Resend every unacknowledged event, in seq order, before any new one.
+      const pending = eventStream.pending();
+      if (pending.length) logger.info(`[V1] Resending ${pending.length} unacknowledged event(s)`);
+      for (const event of pending) sendRaw(eventStream.frame(event));
+    }
   }
 }
 
@@ -1001,6 +1039,7 @@ async function handleTakaroRequest(message: any) {
   metrics.lastRequestTime = Date.now();
 
   let responsePayload: any;
+  let knownAction = true;
 
   try {
     switch (action) {
@@ -1111,6 +1150,7 @@ async function handleTakaroRequest(message: any) {
 
       default:
         logger.warn(`Unknown action: ${action}`);
+        knownAction = false;
         responsePayload = { error: `Unknown action: ${action}` };
     }
   } catch (error: any) {
@@ -1120,6 +1160,13 @@ async function handleTakaroRequest(message: any) {
     responsePayload = { error: error.message };
   }
 
+  if (protocolVersion === 1) {
+    const error = v1ErrorFor(action, responsePayload, knownAction);
+    if (error) {
+      sendToTakaro({ type: 'response', requestId, error });
+      return;
+    }
+  }
   sendTakaroResponse(requestId, responsePayload);
 }
 
@@ -1520,7 +1567,9 @@ async function handleGetPlayerLocation(args: any) {
         return {
           x: response.x,
           y: response.y,
-          z: response.z
+          z: response.z,
+          // Version 1: say which declared map Dimension the position is on.
+          ...(protocolVersion === 1 ? { dimension: dimensionForPosition(response.x, response.y) } : {})
         };
       }
 
@@ -2421,6 +2470,16 @@ function sendPong() {
  * Send a message to Takaro
  */
 function sendToTakaro(message: any) {
+  if (message.type === 'gameEvent' && protocolVersion === 1) {
+    // Version 1: buffer first, so an event the socket loses is resent after identify.
+    const event = eventStream.push(message.payload.type, message.payload.data);
+    sendRaw(eventStream.frame(event));
+    return true;
+  }
+  return sendRaw(message);
+}
+
+function sendRaw(message: any) {
   if (!takaroWs || takaroWs.readyState !== WebSocket.OPEN) {
     logger.error(`Cannot send to Takaro - not connected`);
     return false;

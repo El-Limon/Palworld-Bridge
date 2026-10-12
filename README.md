@@ -209,7 +209,8 @@ Everything Takaro's Generic game server can ask for, and what the bridge does wi
 | `listBans` | yes | Bans the bridge issued (see below) |
 | `listItems` | yes | 1891 item catalog |
 | `shutdown` | yes | REST `/v1/api/shutdown` with a 10 second countdown |
-| `listEntities` / `listLocations` / `getMapInfo` | no | Palworld exposes no such data |
+| `listEntities` / `listLocations` | no | Palworld exposes no such data |
+| Map (protocol v1) | yes, image uploaded by you | Dimensions *Palpagos Islands* and *World Tree* with the game's own bounds; see Map below |
 
 Notes on identity and bans:
 
@@ -221,6 +222,24 @@ Notes on identity and bans:
   `listBans`. Bans made outside the bridge are not listed. Palworld's ban endpoint has no
   expiry parameter either, so a temporary ban from Takaro is permanent in-game and only
   Takaro tracks when it should end.
+
+## 🗺️ Map
+
+On a Takaro with protocol version 1 the bridge declares two map Dimensions, with
+the bounds from the server's `DT_WorldMapUIData` table, and tags every player
+position with the one it is on:
+
+| Dimension | Covers (world units) | Image to upload |
+|---|---|---|
+| `palpagos` (*Palpagos Islands*) | Y −724400…724400 left→right, X 349400…−1099400 top→bottom | the full in-game world map, square, north up, cropped exactly to the map's square frame (the game's `T_WorldMap`, 8192×8192) |
+| `worldtree` (*World Tree*) | Y −818197…−476400 left→right, X 689148.5…347351.5 top→bottom | the full World Tree map, north up, cropped to its frame (the game's `T_TreeMap`) |
+
+The dedicated server has no map image (only the game client has it), and the
+bridge ships none. Upload the image once in the Takaro dashboard (game server →
+Map → upload, for that Dimension, without changing the bounds). Takaro stretches it
+over the bounds: the top-left pixel is the north-west corner, the bottom-right
+pixel the south-east corner. Without an upload Takaro shows a coordinate grid
+with the players on it.
 
 ## 🎒 Item catalog
 
@@ -281,6 +300,9 @@ TAKARO_DEBUG=0
 
 # Optional: another Takaro instance (default wss://connect.takaro.io/)
 # TAKARO_WS_URL=wss://connect.takaro.io/
+
+# Optional: Takaro protocol, 1 (default, falls back to 0 on an old Takaro) or 0
+# TAKARO_PROTOCOL=1
 ```
 
 `TAKARO_DEBUG=1` sets the log level to debug and writes every WebSocket frame
