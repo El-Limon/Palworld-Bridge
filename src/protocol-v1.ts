@@ -97,6 +97,24 @@ export function dimensionForPosition(x: number, y: number): string {
   return MAIN_DIMENSION_ID;
 }
 
+/**
+ * The getPlayerLocation answer for one TakaroChat location reply. When the mod cannot find
+ * the player (they are leaving, or their pawn is gone) it replies with `found: false` and
+ * (0, 0, 0); older mods send only (0, 0, 0). On version 1 that is answered with null, so
+ * Takaro keeps the last real position instead of storing the world origin, which would
+ * draw the player in the middle of the main map. Version 0 keeps the old answer.
+ */
+export function locationAnswer(
+  reply: { x: number; y: number; z: number; found?: boolean },
+  protocolVersion: number,
+): { x: number; y: number; z: number; dimension?: string } | null {
+  const { x, y, z } = reply;
+  if (protocolVersion !== 1) return { x, y, z };
+  const noPosition = reply.found === false || (x === 0 && y === 0 && z === 0);
+  if (noPosition) return null;
+  return { x, y, z, dimension: dimensionForPosition(x, y) };
+}
+
 export interface Capability { name: string; parameters?: Record<string, unknown> }
 
 export function buildManifest(): Capability[] {

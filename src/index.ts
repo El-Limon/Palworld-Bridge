@@ -14,7 +14,8 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
-import { buildManifest, dimensionForPosition, EventStream, identifyError, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
+import { buildManifest, EventStream, identifyError, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
+import { JoinLoadTracker } from './join-spawn';
 
 const execPromise = promisify(exec);
 
@@ -379,6 +380,8 @@ const playerInventories = new Map<string, PlayerInventory>();
 let lastKnownPlayers = new Set<string>();
 let hasInitializedPlayerList = false; // Track if we've done first poll
 const playerCache = new Map<string, { gameId: string; name: string; accountName: string; palworldPlayerId: string; steamId?: string; xboxLiveId?: string; platformId?: string }>();
+// Remembers who is still loading in, so no join spawn position is reported (see join-spawn.ts).
+const joinLoad = new JoinLoadTracker();
 
 // Teleport queue for pending teleports
 interface TeleportRequest {
@@ -405,6 +408,8 @@ interface LocationResponse {
   x: number;
   y: number;
   z: number;
+  /** false when the mod could not find the player; absent on older mods. */
+  found?: boolean;
   timestamp: string;
 }
 const locationRequestQueue: LocationRequest[] = [];
@@ -1271,6 +1276,8 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
     const response = await axios(config);
     const players = response.data.players || [];
 
+    for (const player of players) joinLoad.observe(String(player.userId), player.playerId);
+
     const mappedPlayers = players.map((player: any) => ({
       gameId: String(player.userId),
       name: String(player.name), // Character name (for Takaro)
@@ -1281,9 +1288,7 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
       palworldPlayerId: String(player.playerId || ''), // GUID from Palworld API - matches PlayerState.PlayerId in UE4SS
       ip: player.ip || undefined,
       ping: takaroPing(player.ping),
-      positionX: player.location_x !== undefined ? player.location_x : (player.x !== undefined ? player.x : undefined),
-      positionY: player.location_y !== undefined ? player.location_y : (player.y !== undefined ? player.y : undefined),
-      positionZ: player.location_z !== undefined ? player.location_z : (player.z !== undefined ? player.z : undefined)
+      ...joinLoad.restPosition(player)
     }));
 
     // Always cache player data (including accountName for Lua communication and palworldPlayerId for matching)
@@ -1499,6 +1504,16 @@ async function handleGetPlayerLocation(args: any) {
       return null;
     }
 
+    // While the save loads the player has no real position yet (REST playerId "None").
+    // Read it fresh: the cache can still hold the id from the player's last session.
+    const gameId = cachedPlayer.gameId;
+    const loadedNow = async () =>
+      joinLoad.hasLoadedPosition(gameId, (await handleGetPlayers(false)).find((p: any) => p.gameId === gameId)?.palworldPlayerId);
+    if (!(await loadedNow())) {
+      logger.info(`[LOCATION] ${cachedPlayer.name} is still loading in, no position yet`);
+      return null;
+    }
+
     // Mark request as active
     activeLocationRequests.add(playerId);
 
@@ -1536,13 +1551,14 @@ async function handleGetPlayerLocation(args: any) {
           locationRequestQueue.splice(queueIndex, 1);
         }
 
-        return {
-          x: response.x,
-          y: response.y,
-          z: response.z,
-          // Version 1: say which declared map Dimension the position is on.
-          ...(protocolVersion === 1 ? { dimension: dimensionForPosition(response.x, response.y) } : {})
-        };
+        // Checked again: the player may have started loading in (rejoined) while the request waited.
+        if (!(await loadedNow())) {
+          logger.info(`[LOCATION] ${cachedPlayer.name} is still loading in, no position yet`);
+          return null;
+        }
+
+        // Version 1 names the map Dimension, and answers null when the mod had no position.
+        return locationAnswer(response, protocolVersion);
       }
 
       await new Promise(resolve => setTimeout(resolve, 100));

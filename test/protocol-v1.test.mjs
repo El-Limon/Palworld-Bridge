@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildManifest, dimensionForPosition, EventStream, identifyError, negotiatedVersion,
+  buildManifest, dimensionForPosition, EventStream, identifyError, locationAnswer, negotiatedVersion,
   resolveProtocolSetting, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID,
 } from '../dist/protocol-v1.js';
 
@@ -34,7 +34,7 @@ test('the map declares Palpagos first and the World Tree, from DT_WorldMapUIData
 });
 
 test('positions pick the map they are on', () => {
-  // Start plateau, inland lake and the respawn coast from the staging run.
+  // Start plateau, inland lake and the respawn coast from a live run.
   assert.equal(dimensionForPosition(-350089, 261113), MAIN_DIMENSION_ID);
   assert.equal(dimensionForPosition(-451213, 112830), MAIN_DIMENSION_ID);
   // Inside the World Tree rectangle, north of the main map.
@@ -43,6 +43,21 @@ test('positions pick the map they are on', () => {
   assert.equal(dimensionForPosition(348000, -600000), MAIN_DIMENSION_ID);
   // North of the main map but east of the Tree rectangle: main (nothing else declared).
   assert.equal(dimensionForPosition(500000, 0), MAIN_DIMENSION_ID);
+});
+
+test('location answers name the Dimension on v1 and never send the world origin', () => {
+  // Desert flats on the main map and a spot in the World Tree area, from a live run.
+  assert.deepEqual(locationAnswer({ x: 24003, y: 379261, z: 418 }, 1), { x: 24003, y: 379261, z: 418, dimension: MAIN_DIMENSION_ID });
+  assert.deepEqual(locationAnswer({ x: 522257, y: -634620, z: 11092, found: true }, 1), { x: 522257, y: -634620, z: 11092, dimension: TREE_DIMENSION_ID });
+  // The mod had no pawn for the player (leaving): null, so Takaro keeps the last real position.
+  assert.equal(locationAnswer({ x: 0, y: 0, z: 0, found: false }, 1), null);
+  // Older mods send only (0, 0, 0) for the same case.
+  assert.equal(locationAnswer({ x: 0, y: 0, z: 0 }, 1), null);
+  // A real position with one zero coordinate is still a position.
+  assert.deepEqual(locationAnswer({ x: 0, y: 1500, z: 300 }, 1), { x: 0, y: 1500, z: 300, dimension: MAIN_DIMENSION_ID });
+  // Version 0 keeps the old answer: no dimension, and (0, 0, 0) stays.
+  assert.deepEqual(locationAnswer({ x: 24003, y: 379261, z: 418 }, 0), { x: 24003, y: 379261, z: 418 });
+  assert.deepEqual(locationAnswer({ x: 0, y: 0, z: 0, found: false }, 0), { x: 0, y: 0, z: 0 });
 });
 
 test('protocol setting, negotiation and identify errors', () => {
