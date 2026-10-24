@@ -14,7 +14,7 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
-import { buildManifest, dimensionForPosition, EventStream, identifyError, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
+import { buildManifest, EventStream, identifyError, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
 
 const execPromise = promisify(exec);
 
@@ -405,6 +405,8 @@ interface LocationResponse {
   x: number;
   y: number;
   z: number;
+  /** false when the mod could not find the player; absent on older mods. */
+  found?: boolean;
   timestamp: string;
 }
 const locationRequestQueue: LocationRequest[] = [];
@@ -1536,13 +1538,8 @@ async function handleGetPlayerLocation(args: any) {
           locationRequestQueue.splice(queueIndex, 1);
         }
 
-        return {
-          x: response.x,
-          y: response.y,
-          z: response.z,
-          // Version 1: say which declared map Dimension the position is on.
-          ...(protocolVersion === 1 ? { dimension: dimensionForPosition(response.x, response.y) } : {})
-        };
+        // Version 1 names the map Dimension, and answers null when the mod had no position.
+        return locationAnswer(response, protocolVersion);
       }
 
       await new Promise(resolve => setTimeout(resolve, 100));

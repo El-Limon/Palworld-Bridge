@@ -130,7 +130,7 @@ local function FetchLocationRequests()
 
                         -- Send error response to bridge to clear the stuck request
                         local json = string.format(
-                            '{"requestId":"%s","name":"%s","x":0,"y":0,"z":0,"timestamp":"%s"}',
+                            '{"requestId":"%s","name":"%s","found":false,"x":0,"y":0,"z":0,"timestamp":"%s"}',
                             requestId,
                             playerName,
                             os.date("!%Y-%m-%dT%H:%M:%SZ")
