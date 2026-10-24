@@ -197,9 +197,9 @@ Everything Takaro's Generic game server can ask for, and what the bridge does wi
 | Action | Supported | Notes |
 |---|---|---|
 | `testReachability` | yes | Uses the Palworld REST API, so it also works off-box |
-| `getPlayers` | yes | Fails loudly on a REST error instead of reporting an empty server |
+| `getPlayers` | yes | Fails loudly on a REST error instead of reporting an empty server; no position while a joining player's save loads (REST `playerId` is `None`) and for 10 s after |
 | `getPlayer` | yes | Single player lookup by `gameId`; `null` when not online |
-| `getPlayerLocation` | yes | Needs the `TakaroChat` UE4SS mod; `null` (not `0,0,0`) on failure; on protocol 1 also when the mod finds no pawn for the player (for example while they leave) |
+| `getPlayerLocation` | yes | Needs the `TakaroChat` UE4SS mod; `null` (not `0,0,0`) on failure; on protocol 1 also when the mod finds no pawn for the player (for example while they leave); also `null` while a joining player's save loads and for 10 s after, so the temporary spawn point on Palpagos is never reported |
 | `getPlayerInventory` | yes | Needs the UE4SS mod and `EnableInventoryTracking` |
 | `sendMessage` | yes | Mapped to the REST `announce` endpoint |
 | `executeConsoleCommand` | yes | See the console command table above |
