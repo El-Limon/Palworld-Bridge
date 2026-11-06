@@ -19,6 +19,7 @@ import { JoinLoadTracker } from './join-spawn';
 import { noteRestLevel, progressionAnswer, ProgressionState } from './progression';
 import { CharacterTracker, hardcoreSetting } from './characters';
 import { expiredBans } from './ban-expiry';
+import { ServerProbeFilter } from './server-status';
 
 const execPromise = promisify(exec);
 
@@ -359,6 +360,7 @@ const eventStream = new EventStream();
 // Palworld API client
 let palworldApi: AxiosInstance;
 let isServerRunning = false;
+const serverProbes = new ServerProbeFilter();
 let serverCheckInterval: NodeJS.Timeout | null = null;
 
 // Reconnection state
@@ -1278,7 +1280,7 @@ async function checkServerStatus() {
     loggedProcessUpRestDown = false;
   }
 
-  isServerRunning = restUp;
+  isServerRunning = serverProbes.note(restUp);
 
   if (isServerRunning !== wasRunning) {
     logger.info(`Palworld server status changed: ${isServerRunning ? 'ONLINE' : 'OFFLINE'}`);
