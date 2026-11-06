@@ -64,3 +64,15 @@ test('player-connected waits for the id, and only for a limited time once loaded
   known.note(GID, FIRST, 'Limon');
   assert.equal(known.readyToAnnounce(GID, false, 0), true);
 });
+
+test('a player back on the Defeat screen is not announced without a character', () => {
+  const t = new CharacterTracker();
+  t.note(GID, FIRST, 'Limon');
+  t.end(GID);
+  t.note(GID, FIRST, 'Limon');
+  assert.equal(t.readyToAnnounce(GID, true, 0), false);
+  assert.equal(t.readyToAnnounce(GID, true, 100 * ANNOUNCE_WAIT_MS), false);
+  // The replacement character clears it.
+  t.note(GID, SECOND, 'Limon');
+  assert.equal(t.readyToAnnounce(GID, true, 100 * ANNOUNCE_WAIT_MS), true);
+});

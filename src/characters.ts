@@ -36,10 +36,17 @@ export class CharacterTracker {
   private readonly current = new Map<string, GameCharacter>();
   private readonly ended = new Set<string>();
   private readonly loadedSince = new Map<string, number>();
+  /** Players on the Defeat screen: online, but their character is gone. */
+  private readonly onEnded = new Set<string>();
 
   /** Stores what the mod read. An ended character stays ended, even if its pawn is still around. */
   note(gameId: string, instanceId: unknown, name: string): void {
-    if (!validInstanceId(instanceId) || this.ended.has(instanceId)) return;
+    if (!validInstanceId(instanceId)) return;
+    if (this.ended.has(instanceId)) {
+      this.onEnded.add(gameId);
+      return;
+    }
+    this.onEnded.delete(gameId);
     this.current.set(gameId, { id: instanceId, name });
   }
 
@@ -51,6 +58,7 @@ export class CharacterTracker {
   forget(gameId: string): void {
     this.current.delete(gameId);
     this.loadedSince.delete(gameId);
+    this.onEnded.delete(gameId);
   }
 
   /** The character died on a Hardcore server. */
@@ -63,7 +71,7 @@ export class CharacterTracker {
   /** Whether player-connected may go out now. A player still loading in can take minutes. */
   readyToAnnounce(gameId: string, loaded: boolean, now: number): boolean {
     if (this.current.has(gameId)) return true;
-    if (!loaded) return false;
+    if (!loaded || this.onEnded.has(gameId)) return false;
     const since = this.loadedSince.get(gameId) ?? now;
     this.loadedSince.set(gameId, since);
     return now - since >= ANNOUNCE_WAIT_MS;
