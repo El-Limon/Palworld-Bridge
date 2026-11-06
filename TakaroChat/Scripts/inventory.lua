@@ -44,9 +44,11 @@ local logger = Utils.Logger:new()
 local Inventory = {}
 
 -- Enumerate a player's inventory into a { [code] = count } table.
--- Never throws; returns an empty table on any failure.
+-- Never throws. The second result tells a really empty inventory from one that
+-- could not be read.
 local function EnumeratePlayerInventory(playerState)
     local items = {}
+    local readable = false
 
     local ok, err = pcall(function()
         -- Same resolution as the working give path (items.lua / dkoz AdminCommands).
@@ -74,6 +76,7 @@ local function EnumeratePlayerInventory(playerState)
             return
         end
 
+        readable = true
         containers:ForEach(function(_, containerWrapper)
             local container = containerWrapper:get()
             if not (container and container:IsValid()) then
@@ -106,10 +109,11 @@ local function EnumeratePlayerInventory(playerState)
     end)
 
     if not ok then
+        readable = false
         logger:log(1, "[INVENTORY] enumeration error: " .. tostring(err))
     end
 
-    return items
+    return items, readable
 end
 
 -- Build the JSON items array from a { [code] = count } table.
@@ -210,6 +214,7 @@ local function FetchInventoryRequests()
             local items = {}
             local factsJson = ""
             local playerFound = false
+            local readable = false
 
             local PlayersList = FindAllOf("PalPlayerCharacter")
             if PlayersList then
@@ -228,7 +233,7 @@ local function FetchInventoryRequests()
                     if extractOk and matchName and matchState and
                        matchName:lower() == playerName:lower() then
                         playerFound = true
-                        items = EnumeratePlayerInventory(matchState)
+                        items, readable = EnumeratePlayerInventory(matchState)
                         factsJson = ReadCharacterFactsJson(Player)
                         break
                     end
@@ -241,7 +246,11 @@ local function FetchInventoryRequests()
                 logger:log(1, string.format("[INVENTORY] Player '%s' not found online", playerName))
             end
 
-            -- Always reply (empty array when not found / no items) to clear the request.
+            -- Always reply, to clear the request. found:false tells the bridge this
+            -- is no reading at all, not an empty inventory.
+            if not readable then
+                factsJson = factsJson .. ',"found":false'
+            end
             local itemsJson = ItemsToJson(items)
             local count = 0
             for _ in pairs(items) do count = count + 1 end

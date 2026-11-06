@@ -54,10 +54,10 @@ local function FetchLocationRequests()
                             if success and availableName then
                                 logger:log(2, string.format("[LOCATION]   - '%s'", availableName))
                             else
-                                logger:log(1, "[LOCATION] WARNING: Player has invalid PlayerState")
+                                logger:log(3, "[LOCATION] Skipping a pawn without a PlayerState")
                             end
                         else
-                            logger:log(1, "[LOCATION] WARNING: Player object is invalid")
+                            logger:log(3, "[LOCATION] Skipping an invalid pawn")
                         end
                     end
 

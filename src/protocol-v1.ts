@@ -115,6 +115,21 @@ export function locationAnswer(
   return { x, y, z, dimension: dimensionForPosition(x, y) };
 }
 
+/**
+ * The getPlayerInventory answer when the inventory could not be read. An empty list means
+ * "this player owns nothing": Takaro would record every item as removed and then as added
+ * back on the next sync. On version 1 it is an error, so Takaro keeps what it knows.
+ * Version 0 keeps the old empty answer.
+ */
+export function inventoryUnknown(reason: string, protocolVersion: number): unknown[] | { error: string } {
+  return protocolVersion === 1 ? { error: reason } : [];
+}
+
+/** Palworld also broadcasts empty lines from a SYSTEM sender while a player joins. */
+export function isPlayerChat(message: unknown): boolean {
+  return typeof message === 'string' && message.trim() !== '';
+}
+
 export interface Capability { name: string; parameters?: Record<string, unknown> }
 
 export function buildManifest(): Capability[] {

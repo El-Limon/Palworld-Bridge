@@ -256,11 +256,15 @@ local function AttemptHookRound(trigger)
                 if entry.attempts >= HOOK_RETRY_ATTEMPTS and not entry.gaveUp then
                     entry.gaveUp = true
                     local details = {}
+                    local anyRegistered = false
                     for _, candidate in ipairs(entry.candidates) do
+                        anyRegistered = anyRegistered or candidate.registered
                         table.insert(details, string.format("%s -> %s", candidate.path,
                             candidate.registered and "OK" or (candidate.lastError or "not found")))
                     end
-                    logger:log(1, string.format(
+                    -- A class only exists once a player uses it, so with only female
+                    -- characters online the male Blueprint is simply not loaded.
+                    logger:log(anyRegistered and 2 or 1, string.format(
                         "[HOOKS] Giving up on the %s hook after %d attempts: %s",
                         label, entry.attempts, table.concat(details, " | ")))
                 end

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { progressionAnswer, restLevel } from '../dist/progression.js';
+import { noteRestLevel, progressionAnswer, restLevel } from '../dist/progression.js';
 import { buildManifest } from '../dist/protocol-v1.js';
 
 const KEY = /^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9-]*)*$/;
@@ -27,4 +27,20 @@ test('the character track carries the level and, when known, the experience', ()
 test('only a whole positive REST level counts', () => {
   assert.equal(restLevel({ level: 2 }), 2);
   for (const level of [0, -1, 1.5, '2', null, undefined, NaN]) assert.equal(restLevel({ level }), undefined, String(level));
+});
+
+test('a joining player keeps the last good level, so a rejoin never reads as a drop', () => {
+  const state = { level: 3 };
+  noteRestLevel(state, { level: 1 }, false);
+  assert.equal(state.level, 3);
+  noteRestLevel(state, { level: 4 }, true);
+  assert.equal(state.level, 4);
+  noteRestLevel(state, { level: 'x' }, true);
+  assert.equal(state.level, 4);
+});
+
+test('a first join has no level until the join settles', () => {
+  const state = {};
+  noteRestLevel(state, { level: 1 }, false);
+  assert.deepEqual(progressionAnswer(state), []);
 });

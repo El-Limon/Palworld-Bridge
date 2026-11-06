@@ -14,9 +14,9 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
-import { buildManifest, EventStream, identifyError, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
+import { buildManifest, EventStream, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
 import { JoinLoadTracker } from './join-spawn';
-import { progressionAnswer, ProgressionState, restLevel } from './progression';
+import { noteRestLevel, progressionAnswer, ProgressionState } from './progression';
 
 const execPromise = promisify(exec);
 
@@ -454,6 +454,8 @@ interface InventoryReadResponse {
   name: string;
   items: InventoryReadItem[];
   timestamp: string;
+  /** false when the mod could not read the inventory; absent on older mods. */
+  found?: boolean;
   exp?: number;
   instanceId?: string;
 }
@@ -545,6 +547,10 @@ app.post('/chat', async (req, res) => {
     // Handle different event types
     switch (type) {
       case 'chat':
+        if (!isPlayerChat(message)) {
+          logger.debug(`[CHAT] Ignored empty line from ${playerName}`);
+          break;
+        }
         logger.info(`[CHAT] [${categoryName || category}] ${playerName}: ${message}`);
         if (isConnectedToTakaro) {
           await sendChatEvent({
@@ -1320,8 +1326,7 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
     for (const player of players) {
       const gameId = String(player.userId);
       const state = playerProgression.get(gameId) ?? {};
-      const level = restLevel(player);
-      if (level !== undefined && joinLoad.hasLoadedPosition(gameId, player.playerId)) state.level = level;
+      noteRestLevel(state, player, joinLoad.hasLoadedPosition(gameId, player.playerId));
       playerProgression.set(gameId, state);
     }
 
@@ -1644,7 +1649,13 @@ async function handleGetPlayerInventory(args: any) {
 
     if (!player) {
       logger.warn(`[INVENTORY] Player ${playerId} not found for inventory lookup`);
-      return [];
+      return inventoryUnknown(`Player ${playerId} is not online`, protocolVersion);
+    }
+
+    // The temporary pawn of a joining player has an empty inventory.
+    if (!joinLoad.hasLoadedPosition(player.gameId, player.palworldPlayerId)) {
+      logger.debug(`[INVENTORY] ${player.name} is still loading in`);
+      return inventoryUnknown(`${player.name} is still loading in`, protocolVersion);
     }
 
     const playerName = player.accountName; // Matches PlayerNamePrivate in Lua
@@ -1674,6 +1685,10 @@ async function handleGetPlayerInventory(args: any) {
           inventoryRequestQueue.splice(queueIndex, 1);
         }
 
+        if (response.found === false) {
+          return inventoryUnknown(`The mod could not read the inventory of ${player.name}`, protocolVersion);
+        }
+
         const rows = Array.isArray(response.items) ? response.items : [];
         // Map to Takaro IItemDTO shape. Takaro's IItemDTO carries the stack size in
         // the `amount` field (see gettakaro/takaro GameServer.ts IItemDTO); sending
@@ -1698,16 +1713,16 @@ async function handleGetPlayerInventory(args: any) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    // Timeout - clean up the pending request and return empty (not an error).
+    // Timeout - clean up the pending request.
     const queueIndex = inventoryRequestQueue.findIndex(r => r.requestId === requestId);
     if (queueIndex !== -1) {
       inventoryRequestQueue.splice(queueIndex, 1);
     }
     logger.warn(`[INVENTORY] Timeout waiting for inventory response for ${player.name}`);
-    return [];
+    return inventoryUnknown(`Timed out reading the inventory of ${player.name}`, protocolVersion);
   } catch (error: any) {
     logger.error(`[INVENTORY] Failed to get player inventory: ${error.message}`);
-    return [];
+    return inventoryUnknown(`Could not read the inventory: ${error.message}`, protocolVersion);
   }
 }
 

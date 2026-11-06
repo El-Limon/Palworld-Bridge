@@ -6,9 +6,9 @@
  * last trustworthy level per player and getPlayerProgression answers from that, so a Takaro
  * poll costs the game nothing.
  *
- * While a player joins, REST reports level 1 for the temporary pawn, also for a few seconds
- * after the real playerId appears. Storing that would look like a level drop and a level
- * gain on every rejoin, so readings only count once the join has settled (join-spawn.ts).
+ * While a player joins, REST reports level 1 for the temporary pawn. Storing that would look
+ * like a level drop and a level gain on every rejoin, so a reading only counts once the join
+ * has settled (join-spawn.ts).
  */
 
 export interface ProgressionTrack {
@@ -27,6 +27,12 @@ export interface ProgressionState {
 export function restLevel(row: { level?: unknown }): number | undefined {
   const level = row.level;
   return typeof level === 'number' && Number.isInteger(level) && level >= 1 ? level : undefined;
+}
+
+/** Keeps a REST level, unless the player is still joining: then the last good level stays. */
+export function noteRestLevel(state: ProgressionState, row: { level?: unknown }, joinSettled: boolean): void {
+  const level = restLevel(row);
+  if (joinSettled && level !== undefined) state.level = level;
 }
 
 /**

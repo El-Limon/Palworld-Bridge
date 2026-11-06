@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildManifest, dimensionForPosition, EventStream, identifyError, locationAnswer, negotiatedVersion,
+  buildManifest, dimensionForPosition, EventStream, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, negotiatedVersion,
   resolveProtocolSetting, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID,
 } from '../dist/protocol-v1.js';
 
@@ -93,4 +93,15 @@ test('event stream: seq from 1, cumulative ack, resend set, drop oldest on overf
   for (const msg of ['d', 'e', 'f']) stream.push('chat-message', { msg });
   assert.deepEqual(stream.pending().map((e) => e.seq), [4, 5, 6], 'oldest dropped at capacity');
   assert.match(new EventStream().streamId, /^[A-Za-z0-9_-]{1,128}$/);
+});
+
+test('an unreadable inventory is never an empty one on version 1', () => {
+  assert.deepEqual(inventoryUnknown('timed out', 1), { error: 'timed out' });
+  assert.deepEqual(v1ErrorFor('getPlayerInventory', inventoryUnknown('timed out', 1), true), { code: 'game_error', message: 'timed out' });
+  assert.deepEqual(inventoryUnknown('timed out', 0), []);
+});
+
+test('empty lines are not player chat', () => {
+  assert.equal(isPlayerChat('hello'), true);
+  for (const message of ['', '   ', undefined, null]) assert.equal(isPlayerChat(message), false);
 });
