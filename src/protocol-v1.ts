@@ -6,6 +6,7 @@
  * The bridge offers [0, 1]; a Takaro that answers no protocolVersion keeps version 0.
  */
 import { randomUUID } from 'crypto';
+import { CHARACTERS_CAPABILITY } from './characters';
 
 export type ProtocolErrorCode = 'unsupported' | 'invalid_args' | 'not_found' | 'game_error' | 'internal';
 
@@ -153,11 +154,12 @@ export function isPlayerChat(message: unknown): boolean {
 
 export interface Capability { name: string; parameters?: Record<string, unknown> }
 
-export function buildManifest(): Capability[] {
+export function buildManifest(hardcore = false): Capability[] {
   return [
     ...ACTION_CAPABILITIES.map((name) => ({ name })),
     ...EVENT_CAPABILITIES.map((name) => ({ name })),
     { name: 'players.progression', parameters: { source: 'server' } },
+    ...(hardcore ? [CHARACTERS_CAPABILITY] : []),
     { name: 'map', parameters: { dimensions: MAP_DIMENSIONS } },
   ];
 }

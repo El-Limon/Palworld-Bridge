@@ -202,6 +202,7 @@ Everything Takaro's Generic game server can ask for, and what the bridge does wi
 | `getPlayerLocation` | yes | Needs the `TakaroChat` UE4SS mod; `null` (not `0,0,0`) on failure; on protocol 1 also when the mod finds no pawn for the player (for example while they leave); also `null` while a joining player's save loads and for 10 s after, so the temporary spawn point on Palpagos is never reported |
 | `getPlayerInventory` | yes | Needs the UE4SS mod and `EnableInventoryTracking` |
 | `getPlayerProgression` | yes | Protocol v1. The character level comes from the REST player list, so it needs no mod; `experience` is added when the UE4SS mod and `EnableInventoryTracking` are on |
+| Characters | Hardcore servers only | With `bHardcore` a death deletes the character, so the bridge declares `players.characters` and reports the save's character id. Needs the UE4SS mod and a Takaro version with Characters support. Normal servers have one character per account and declare nothing |
 | `sendMessage` | yes | Mapped to the REST `announce` endpoint |
 | `executeConsoleCommand` | yes | See the console command table above |
 | `giveItem` | yes | Needs the UE4SS mod; Palworld has no item quality tiers |

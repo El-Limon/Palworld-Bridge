@@ -17,6 +17,7 @@ import { resolveTakaroWsUrl } from './takaro-url';
 import { buildManifest, EventStream, IDENTIFY_TIMEOUT_MS, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, takaroWentSilent, v1ErrorFor, WS_OPTIONS } from './protocol-v1';
 import { JoinLoadTracker } from './join-spawn';
 import { noteRestLevel, progressionAnswer, ProgressionState } from './progression';
+import { CharacterTracker, hardcoreSetting } from './characters';
 
 const execPromise = promisify(exec);
 
@@ -384,6 +385,9 @@ let lastKnownPlayers = new Set<string>();
 let hasInitializedPlayerList = false; // Track if we've done first poll
 const playerCache = new Map<string, { gameId: string; name: string; accountName: string; palworldPlayerId: string; steamId?: string; xboxLiveId?: string; platformId?: string }>();
 const playerProgression = new Map<string, ProgressionState>();
+const characters = new CharacterTracker();
+// What this connection declared; a change of bHardcore needs a new identify.
+let declaredHardcore = false;
 // Remembers who is still loading in, so no join spawn position is reported (see join-spawn.ts).
 const joinLoad = new JoinLoadTracker();
 
@@ -461,6 +465,7 @@ interface InventoryReadResponse {
   exp?: number;
   instanceId?: string;
 }
+const CHARACTER_FACTS_PREFIX = 'facts_';
 const inventoryRequestQueue: InventoryReadRequest[] = [];
 const inventoryResponseQueue: InventoryReadResponse[] = [];
 
@@ -578,8 +583,9 @@ app.post('/chat', async (req, res) => {
       case 'player_death':
         logger.info(`[EVENT] Player died: ${playerName}`);
         if (isConnectedToTakaro) {
-          await sendPlayerEvent('player-death', playerName, timestamp);
+          await sendPlayerEvent('player-death', playerName, timestamp, undefined, charactersDeclared() ? { characterEnded: true } : {});
         }
+        if (charactersDeclared()) endCharacterOf(playerName);
         break;
 
       case 'inventory':
@@ -686,7 +692,13 @@ app.get('/inventory-queue', (req, res) => {
 app.post('/inventory-response', (req, res) => {
   try {
     const response: InventoryReadResponse = req.body;
-    inventoryResponseQueue.push(response);
+    if (String(response.requestId).startsWith(CHARACTER_FACTS_PREFIX)) {
+      // Nobody waits for this reply, so nobody else takes it off the queue the mod polls.
+      const queued = inventoryRequestQueue.findIndex((r) => r.requestId === response.requestId);
+      if (queued !== -1) inventoryRequestQueue.splice(queued, 1);
+    } else {
+      inventoryResponseQueue.push(response);
+    }
     recordCharacterFacts(response);
     logger.debug(`[INVENTORY] Received response for ${response.name}: ${(response.items || []).length} item stack(s)`);
     res.status(200).json({ success: true });
@@ -755,7 +767,8 @@ async function sendChatEvent(chatData: any) {
           player: {
             name: player.name,
             gameId: player.gameId,
-            ...palworldIdentity(player.gameId)
+            ...palworldIdentity(player.gameId),
+            ...characterField(player.gameId)
           },
           channel: channel
         }
@@ -773,7 +786,7 @@ async function sendChatEvent(chatData: any) {
 /**
  * Send player event to Takaro (connect/disconnect/death)
  */
-async function sendPlayerEvent(eventType: string, playerName: string, timestamp?: string, gameId?: string) {
+async function sendPlayerEvent(eventType: string, playerName: string, timestamp?: string, gameId?: string, extra: Record<string, unknown> = {}) {
   try {
     // Use provided gameId or look up in cache
     let player: any = null;
@@ -807,8 +820,10 @@ async function sendPlayerEvent(eventType: string, playerName: string, timestamp?
           player: {
             name: String(player.name),
             gameId: String(player.gameId),
-            ...palworldIdentity(String(player.gameId))
-          }
+            ...palworldIdentity(String(player.gameId)),
+            ...characterField(String(player.gameId))
+          },
+          ...extra
         }
       }
     };
@@ -875,7 +890,7 @@ function connectToTakaro() {
     logger.info('Connected to Takaro WebSocket');
     // reconnectAttempts is reset on a *successful* identify, not merely on a
     // TCP connect, so a repeatedly rejected identify still backs off properly.
-    sendIdentify();
+    refreshHardcore().finally(sendIdentify);
     clearTimeout(identifyTimer);
     identifyTimer = setTimeout(() => {
       logger.warn('Takaro did not answer the identify in time, reconnecting');
@@ -930,7 +945,8 @@ function sendIdentify() {
 
   if (TAKARO_PROTOCOL === 1) {
     identifyMessage.payload.protocolVersions = [0, 1];
-    identifyMessage.payload.capabilities = buildManifest();
+    declaredHardcore = serverHardcore === true;
+    identifyMessage.payload.capabilities = buildManifest(declaredHardcore);
   }
 
   logger.info('Sending identify message to Takaro');
@@ -1286,6 +1302,47 @@ function startServerMonitoring() {
 /**
  * Get current players from Palworld server
  */
+let serverHardcore: boolean | null = null;
+
+function charactersDeclared(): boolean {
+  return protocolVersion === 1 && declaredHardcore;
+}
+
+/** The `character` of a player payload, on servers that declare Characters. */
+function characterField(gameId: string): { character?: { id: string; name: string } } {
+  const character = charactersDeclared() ? characters.get(gameId) : undefined;
+  return character ? { character } : {};
+}
+
+/** Reads bHardcore. A failed read keeps the last known value. */
+async function refreshHardcore(): Promise<void> {
+  try {
+    const value = hardcoreSetting((await palworldApi.get('/v1/api/settings')).data);
+    if (value !== null) serverHardcore = value;
+  } catch (error: any) {
+    logger.debug(`[CHARACTERS] Could not read the server settings: ${error.message}`);
+  }
+}
+
+/** The deleted character must not linger in the next one's experience. */
+function endCharacterOf(playerName: string) {
+  for (const player of playerCache.values()) {
+    if (player.name !== playerName && player.accountName !== playerName) continue;
+    characters.end(player.gameId);
+    playerProgression.set(player.gameId, {});
+  }
+}
+
+/** Asks the mod for the character facts without waiting; the reply lands in recordCharacterFacts. */
+function requestCharacterFacts(accountName: string) {
+  if (inventoryRequestQueue.some((r) => r.name === accountName && r.requestId.startsWith(CHARACTER_FACTS_PREFIX))) return;
+  inventoryRequestQueue.push({
+    name: accountName,
+    requestId: `${CHARACTER_FACTS_PREFIX}${Date.now()}`,
+    timestamp: new Date().toISOString()
+  });
+}
+
 /** Keeps what the mod read from the character alongside its inventory reply. */
 function recordCharacterFacts(response: InventoryReadResponse) {
   for (const player of playerCache.values()) {
@@ -1293,6 +1350,10 @@ function recordCharacterFacts(response: InventoryReadResponse) {
     const state = playerProgression.get(player.gameId) ?? {};
     if (typeof response.exp === 'number') state.experience = response.exp;
     playerProgression.set(player.gameId, state);
+    // The temporary pawn of a joining player is not the character.
+    if (joinLoad.hasLoadedPosition(player.gameId, player.palworldPlayerId)) {
+      characters.note(player.gameId, response.instanceId, player.name);
+    }
     logger.debug(`[PROGRESSION] ${player.name}: exp=${response.exp} instanceId=${response.instanceId}`);
   }
 }
@@ -1332,7 +1393,8 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
       palworldPlayerId: String(player.playerId || ''), // GUID from Palworld API - matches PlayerState.PlayerId in UE4SS
       ip: player.ip || undefined,
       ping: takaroPing(player.ping),
-      ...joinLoad.restPosition(player)
+      ...joinLoad.restPosition(player),
+      ...characterField(String(player.userId))
     }));
 
     for (const player of players) {
@@ -1358,6 +1420,12 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
         // Detect new players (connected)
         for (const player of mappedPlayers) {
           if (!lastKnownPlayers.has(player.gameId)) {
+            const loaded = joinLoad.hasLoadedPosition(player.gameId, player.palworldPlayerId);
+            if (charactersDeclared() && !characters.readyToAnnounce(player.gameId, loaded, Date.now())) {
+              if (loaded) requestCharacterFacts(player.accountName);
+              currentPlayers.delete(player.gameId);
+              continue;
+            }
             logger.info(`[CONNECT DETECTED] Player joined: ${player.name} (gameId: ${player.gameId})`);
             await sendPlayerEvent('player-connected', player.name, new Date().toISOString(), player.gameId);
           }
@@ -1370,6 +1438,7 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
             const playerName = cachedPlayer ? cachedPlayer.name : lastPlayerId;
             logger.info(`[DISCONNECT DETECTED] Player left: ${playerName} (gameId: ${lastPlayerId})`);
             await sendPlayerEvent('player-disconnected', playerName, new Date().toISOString(), lastPlayerId);
+            characters.forget(lastPlayerId);
           }
         }
       } else {
@@ -2694,6 +2763,14 @@ setInterval(async () => {
     logger.warn('No message from Takaro for two minutes, reconnecting');
     takaroWs?.terminate();
     return;
+  }
+  if (isConnectedToTakaro && pollCount % 6 === 0) {
+    await refreshHardcore();
+    if (serverHardcore !== null && serverHardcore !== declaredHardcore && protocolVersion === 1) {
+      logger.info(`[CHARACTERS] bHardcore is now ${serverHardcore}, identifying again`);
+      takaroWs?.terminate();
+      return;
+    }
   }
   if (isConnectedToTakaro) {
     logger.debug(`[POLL #${pollCount}] Checking for player changes...`);
