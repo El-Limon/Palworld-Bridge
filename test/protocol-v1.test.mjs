@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
+import WebSocket from 'ws';
 import {
   buildManifest, dimensionForPosition, EventStream, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, negotiatedVersion,
-  resolveProtocolSetting, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID,
+  resolveProtocolSetting, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID, WS_OPTIONS,
 } from '../dist/protocol-v1.js';
 
 const NAME = /^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9-]*)*$/;
@@ -104,4 +106,15 @@ test('an unreadable inventory is never an empty one on version 1', () => {
 test('empty lines are not player chat', () => {
   assert.equal(isPlayerChat('hello'), true);
   for (const message of ['', '   ', undefined, null]) assert.equal(isPlayerChat(message), false);
+});
+
+test('a server that accepts TCP but never upgrades still ends in close, so a retry gets scheduled', async () => {
+  assert.ok(WS_OPTIONS.handshakeTimeout > 0);
+  const silent = net.createServer(() => {});
+  await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
+  const socket = new WebSocket(`ws://127.0.0.1:${silent.address().port}/`, { ...WS_OPTIONS, handshakeTimeout: 100 });
+  socket.on('error', () => {});
+  await new Promise((resolve) => socket.on('close', resolve));
+  silent.close();
+  silent.unref();
 });

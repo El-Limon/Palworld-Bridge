@@ -9,6 +9,16 @@ import { randomUUID } from 'crypto';
 
 export type ProtocolErrorCode = 'unsupported' | 'invalid_args' | 'not_found' | 'game_error' | 'internal';
 
+/**
+ * A connection can open at the TCP level and then never finish the WebSocket upgrade. Without
+ * a handshake timeout neither `close` nor `error` ever fires, so no retry is scheduled and the
+ * bridge stays offline until someone restarts it.
+ */
+export const WS_OPTIONS = { handshakeTimeout: 15_000 };
+
+/** How long Takaro gets to answer an identify before the connection is dropped and retried. */
+export const IDENTIFY_TIMEOUT_MS = 20_000;
+
 /** TAKARO_PROTOCOL=0 keeps the version 0 identify; anything else offers [0, 1]. */
 export function resolveProtocolSetting(value: string | undefined): 0 | 1 {
   return String(value ?? '').trim() === '0' ? 0 : 1;

@@ -14,7 +14,7 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
-import { buildManifest, EventStream, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
+import { buildManifest, EventStream, IDENTIFY_TIMEOUT_MS, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor, WS_OPTIONS } from './protocol-v1';
 import { JoinLoadTracker } from './join-spawn';
 import { noteRestLevel, progressionAnswer, ProgressionState } from './progression';
 
@@ -361,6 +361,7 @@ let serverCheckInterval: NodeJS.Timeout | null = null;
 
 // Reconnection state
 let reconnectAttempts = 0;
+let identifyTimer: NodeJS.Timeout | undefined;
 const MAX_RECONNECT_DELAY = 60000; // 60 seconds
 const BASE_RECONNECT_DELAY = 3000; // 3 seconds
 let identifyFailures = 0;
@@ -866,13 +867,19 @@ function connectToTakaro() {
   }
 
   logger.info(`Connecting to Takaro at ${TAKARO_WS_URL} (attempt ${reconnectAttempts + 1})`);
-  takaroWs = new WebSocket(TAKARO_WS_URL);
+  const socket = new WebSocket(TAKARO_WS_URL, WS_OPTIONS);
+  takaroWs = socket;
 
   takaroWs.on('open', () => {
     logger.info('Connected to Takaro WebSocket');
     // reconnectAttempts is reset on a *successful* identify, not merely on a
     // TCP connect, so a repeatedly rejected identify still backs off properly.
     sendIdentify();
+    clearTimeout(identifyTimer);
+    identifyTimer = setTimeout(() => {
+      logger.warn('Takaro did not answer the identify in time, reconnecting');
+      socket.terminate();
+    }, IDENTIFY_TIMEOUT_MS);
   });
 
   takaroWs.on('message', (data: WebSocket.Data) => {
@@ -886,8 +893,9 @@ function connectToTakaro() {
     }
   });
 
-  takaroWs.on('close', () => {
-    logger.warn('Disconnected from Takaro');
+  takaroWs.on('close', (code, reason) => {
+    logger.warn(`Disconnected from Takaro (code ${code}${reason.length ? `, ${reason.toString()}` : ''})`);
+    clearTimeout(identifyTimer);
     isConnectedToTakaro = false;
     protocolVersion = 0;
     scheduleReconnect();
@@ -935,6 +943,7 @@ function sendIdentify() {
 function handleTakaroMessage(message: any) {
   switch (message.type) {
     case 'identifyResponse':
+      clearTimeout(identifyTimer);
       handleIdentifyResponse(message);
       break;
 
