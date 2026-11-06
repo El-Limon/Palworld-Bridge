@@ -18,6 +18,7 @@ import { buildManifest, EventStream, IDENTIFY_TIMEOUT_MS, identifyError, invento
 import { JoinLoadTracker } from './join-spawn';
 import { noteRestLevel, progressionAnswer, ProgressionState } from './progression';
 import { CharacterTracker, hardcoreSetting } from './characters';
+import { expiredBans } from './ban-expiry';
 
 const execPromise = promisify(exec);
 
@@ -2398,10 +2399,7 @@ async function handleBanPlayer(args: any) {
   }
 
   // Palworld's REST /v1/api/ban takes only { userid, message } -- there is no expiry
-  // parameter, so a temporary ban from Takaro becomes a permanent in-game ban.
-  if (banArgs?.expiresAt) {
-    logger.warn(`[BAN] Palworld's REST API has no ban expiry; ${userId} is banned permanently in-game (expiresAt ${banArgs.expiresAt} is only tracked by Takaro)`);
-  }
+  // parameter, so the poll below lifts a temporary ban when its expiresAt has passed.
 
   try {
     const authString = Buffer.from(`${PALWORLD_USERNAME}:${PALWORLD_PASSWORD}`).toString('base64');
@@ -2764,6 +2762,10 @@ connectToTakaro();
 let pollCount = 0;
 setInterval(async () => {
   pollCount++;
+  for (const record of expiredBans(banLedger.values(), Date.now())) {
+    logger.info(`[BAN] Lifting the expired ban of ${record.gameId}`);
+    await handleUnbanPlayer({ gameId: record.gameId });
+  }
   if (isConnectedToTakaro && takaroWentSilent(lastTakaroFrameAt, Date.now())) {
     logger.info('No message from Takaro for two minutes, reconnecting');
     takaroWs?.terminate();

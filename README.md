@@ -207,7 +207,7 @@ Everything Takaro's Generic game server can ask for, and what the bridge does wi
 | `executeConsoleCommand` | yes | See the console command table above |
 | `giveItem` | yes | Needs the UE4SS mod; Palworld has no item quality tiers |
 | `teleportPlayer` | yes | Needs the UE4SS mod; coordinates or another player |
-| `kickPlayer` / `banPlayer` / `unbanPlayer` | yes | Takaro's reason is used as the in-game message |
+| `kickPlayer` / `banPlayer` / `unbanPlayer` | yes | Takaro's reason is used as the in-game message; a timed ban is lifted by the bridge when it expires |
 | `listBans` | yes | Bans the bridge issued (see below) |
 | `listItems` | yes | 1891 item catalog |
 | `shutdown` | yes | REST `/v1/api/shutdown` with a 10 second countdown |
