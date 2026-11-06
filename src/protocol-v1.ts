@@ -121,6 +121,7 @@ export function buildManifest(): Capability[] {
   return [
     ...ACTION_CAPABILITIES.map((name) => ({ name })),
     ...EVENT_CAPABILITIES.map((name) => ({ name })),
+    { name: 'players.progression', parameters: { source: 'server' } },
     { name: 'map', parameters: { dimensions: MAP_DIMENSIONS } },
   ];
 }

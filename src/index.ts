@@ -16,6 +16,7 @@ import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArg
 import { resolveTakaroWsUrl } from './takaro-url';
 import { buildManifest, EventStream, identifyError, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
 import { JoinLoadTracker } from './join-spawn';
+import { progressionAnswer, ProgressionState, restLevel } from './progression';
 
 const execPromise = promisify(exec);
 
@@ -380,6 +381,7 @@ const playerInventories = new Map<string, PlayerInventory>();
 let lastKnownPlayers = new Set<string>();
 let hasInitializedPlayerList = false; // Track if we've done first poll
 const playerCache = new Map<string, { gameId: string; name: string; accountName: string; palworldPlayerId: string; steamId?: string; xboxLiveId?: string; platformId?: string }>();
+const playerProgression = new Map<string, ProgressionState>();
 // Remembers who is still loading in, so no join spawn position is reported (see join-spawn.ts).
 const joinLoad = new JoinLoadTracker();
 
@@ -452,6 +454,8 @@ interface InventoryReadResponse {
   name: string;
   items: InventoryReadItem[];
   timestamp: string;
+  exp?: number;
+  instanceId?: string;
 }
 const inventoryRequestQueue: InventoryReadRequest[] = [];
 const inventoryResponseQueue: InventoryReadResponse[] = [];
@@ -675,6 +679,7 @@ app.post('/inventory-response', (req, res) => {
   try {
     const response: InventoryReadResponse = req.body;
     inventoryResponseQueue.push(response);
+    recordCharacterFacts(response);
     logger.debug(`[INVENTORY] Received response for ${response.name}: ${(response.items || []).length} item stack(s)`);
     res.status(200).json({ success: true });
   } catch (error: any) {
@@ -1099,6 +1104,10 @@ async function handleTakaroRequest(message: any) {
         responsePayload = await handleGetPlayerLocation(args);
         break;
 
+      case 'getPlayerProgression':
+        responsePayload = handleGetPlayerProgression(args);
+        break;
+
       case 'getPlayerInventory':
         responsePayload = await handleGetPlayerInventory(args);
         break;
@@ -1259,6 +1268,23 @@ function startServerMonitoring() {
 /**
  * Get current players from Palworld server
  */
+/** Keeps what the mod read from the character alongside its inventory reply. */
+function recordCharacterFacts(response: InventoryReadResponse) {
+  for (const player of playerCache.values()) {
+    if (player.accountName !== response.name) continue;
+    const state = playerProgression.get(player.gameId) ?? {};
+    if (typeof response.exp === 'number') state.experience = response.exp;
+    playerProgression.set(player.gameId, state);
+    logger.debug(`[PROGRESSION] ${player.name}: exp=${response.exp} instanceId=${response.instanceId}`);
+  }
+}
+
+/** Answers from the values the player poll keeps; Takaro asks on every sync. */
+function handleGetPlayerProgression(args: any) {
+  const parsed = typeof args === 'string' ? JSON.parse(args) : args;
+  return progressionAnswer(playerProgression.get(String(parsed?.gameId ?? '')));
+}
+
 async function handleGetPlayers(detectChanges: boolean = false, throwOnError: boolean = false) {
   try {
     const authString = Buffer.from(`${PALWORLD_USERNAME}:${PALWORLD_PASSWORD}`).toString('base64');
@@ -1290,6 +1316,14 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
       ping: takaroPing(player.ping),
       ...joinLoad.restPosition(player)
     }));
+
+    for (const player of players) {
+      const gameId = String(player.userId);
+      const state = playerProgression.get(gameId) ?? {};
+      const level = restLevel(player);
+      if (level !== undefined && joinLoad.hasLoadedPosition(gameId, player.playerId)) state.level = level;
+      playerProgression.set(gameId, state);
+    }
 
     // Always cache player data (including accountName for Lua communication and palworldPlayerId for matching)
     for (const player of mappedPlayers) {
