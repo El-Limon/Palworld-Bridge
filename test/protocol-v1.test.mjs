@@ -4,7 +4,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import {
   buildManifest, dimensionForPosition, EventStream, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, negotiatedVersion,
-  resolveProtocolSetting, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID, WS_OPTIONS,
+  resolveProtocolSetting, takaroWentSilent, TAKARO_SILENCE_MS, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID, WS_OPTIONS,
 } from '../dist/protocol-v1.js';
 
 const NAME = /^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9-]*)*$/;
@@ -117,4 +117,11 @@ test('a server that accepts TCP but never upgrades still ends in close, so a ret
   await new Promise((resolve) => socket.on('close', resolve));
   silent.close();
   silent.unref();
+});
+
+test('two minutes without a frame from Takaro counts as a dead connection', () => {
+  assert.equal(takaroWentSilent(0, TAKARO_SILENCE_MS - 1), false);
+  assert.equal(takaroWentSilent(0, TAKARO_SILENCE_MS), true);
+  // Well above Takaro's 30 second player sync, so a healthy link never trips it.
+  assert.ok(TAKARO_SILENCE_MS >= 4 * 30_000);
 });

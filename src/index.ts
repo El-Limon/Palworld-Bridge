@@ -14,7 +14,7 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
-import { buildManifest, EventStream, IDENTIFY_TIMEOUT_MS, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor, WS_OPTIONS } from './protocol-v1';
+import { buildManifest, EventStream, IDENTIFY_TIMEOUT_MS, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, takaroWentSilent, v1ErrorFor, WS_OPTIONS } from './protocol-v1';
 import { JoinLoadTracker } from './join-spawn';
 import { noteRestLevel, progressionAnswer, ProgressionState } from './progression';
 
@@ -362,6 +362,7 @@ let serverCheckInterval: NodeJS.Timeout | null = null;
 // Reconnection state
 let reconnectAttempts = 0;
 let identifyTimer: NodeJS.Timeout | undefined;
+let lastTakaroFrameAt = Date.now();
 const MAX_RECONNECT_DELAY = 60000; // 60 seconds
 const BASE_RECONNECT_DELAY = 3000; // 3 seconds
 let identifyFailures = 0;
@@ -883,6 +884,7 @@ function connectToTakaro() {
   });
 
   takaroWs.on('message', (data: WebSocket.Data) => {
+    lastTakaroFrameAt = Date.now();
     try {
       logWsFrame('RECV', data.toString());
       const message = JSON.parse(data.toString());
@@ -1011,6 +1013,7 @@ function handleIdentifyResponse(message: any) {
       logger.debug(`Failed to close socket after identify failure: ${error.message}`);
     }
   } else {
+    lastTakaroFrameAt = Date.now();
     protocolVersion = negotiatedVersion(message);
     logger.info(`Successfully identified with Takaro (protocol version ${protocolVersion}${protocolVersion === 1 ? `, map Dimensions ${MAP_DIMENSIONS.map((d) => d.id).join(', ')}` : ''})`);
     isConnectedToTakaro = true;
@@ -2687,6 +2690,11 @@ connectToTakaro();
 let pollCount = 0;
 setInterval(async () => {
   pollCount++;
+  if (isConnectedToTakaro && takaroWentSilent(lastTakaroFrameAt, Date.now())) {
+    logger.warn('No message from Takaro for two minutes, reconnecting');
+    takaroWs?.terminate();
+    return;
+  }
   if (isConnectedToTakaro) {
     logger.debug(`[POLL #${pollCount}] Checking for player changes...`);
     await handleGetPlayers(true); // Pass true to enable change detection

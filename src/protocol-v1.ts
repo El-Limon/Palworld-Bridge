@@ -19,6 +19,17 @@ export const WS_OPTIONS = { handshakeTimeout: 15_000 };
 /** How long Takaro gets to answer an identify before the connection is dropped and retried. */
 export const IDENTIFY_TIMEOUT_MS = 20_000;
 
+/**
+ * Takaro sends something at least every 30 seconds to a connected game server. A link can die
+ * without a close frame: Takaro then reports the server as not connected while this side still
+ * sees an open socket. Silence this long means the connection is gone.
+ */
+export const TAKARO_SILENCE_MS = 120_000;
+
+export function takaroWentSilent(lastFrameAt: number, now: number): boolean {
+  return now - lastFrameAt >= TAKARO_SILENCE_MS;
+}
+
 /** TAKARO_PROTOCOL=0 keeps the version 0 identify; anything else offers [0, 1]. */
 export function resolveProtocolSetting(value: string | undefined): 0 | 1 {
   return String(value ?? '').trim() === '0' ? 0 : 1;
