@@ -2760,7 +2760,7 @@ let pollCount = 0;
 setInterval(async () => {
   pollCount++;
   if (isConnectedToTakaro && takaroWentSilent(lastTakaroFrameAt, Date.now())) {
-    logger.warn('No message from Takaro for two minutes, reconnecting');
+    logger.info('No message from Takaro for two minutes, reconnecting');
     takaroWs?.terminate();
     return;
   }
