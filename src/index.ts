@@ -746,6 +746,11 @@ async function sendChatEvent(chatData: any) {
     // If player not in cache, trigger refresh and skip this event
     // This prevents sending invalid gameId (player name) to Takaro
     if (!player) {
+      // Every announce comes back through the chat hook from this sender.
+      if (chatData.playerName === 'SYSTEM') {
+        logger.debug(`[CHAT] Ignored server line: ${chatData.message}`);
+        return;
+      }
       logger.warn(`Player ${chatData.playerName} not in cache yet, skipping chat event. Triggering player refresh.`);
       // Trigger immediate player list refresh to update cache
       handleGetPlayers().catch(err => logger.error(`Error refreshing players: ${err.message}`));
