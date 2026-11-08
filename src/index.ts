@@ -910,6 +910,11 @@ function connectToTakaro() {
     }, IDENTIFY_TIMEOUT_MS);
   });
 
+  // Takaro's heartbeat is a WebSocket ping, not a message; a quiet but healthy link only shows these.
+  takaroWs.on('ping', () => {
+    lastTakaroFrameAt = Date.now();
+  });
+
   takaroWs.on('message', (data: WebSocket.Data) => {
     lastTakaroFrameAt = Date.now();
     try {

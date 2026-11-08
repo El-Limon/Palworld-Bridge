@@ -21,7 +21,7 @@ export const WS_OPTIONS = { handshakeTimeout: 15_000 };
 export const IDENTIFY_TIMEOUT_MS = 20_000;
 
 /**
- * Takaro sends something at least every 30 seconds to a connected game server. A link can die
+ * Takaro pings a connected game server every 30 seconds (a WebSocket ping frame). A link can die
  * without a close frame: Takaro then reports the server as not connected while this side still
  * sees an open socket. Silence this long means the connection is gone.
  */
