@@ -195,7 +195,7 @@ local function FetchInventoryRequests()
         end
 
         local url = string.format('http://%s/inventory-queue', bridgeHost)
-        local handle = io.popen(string.format('curl -s %s', url))
+        local handle = io.popen(string.format('curl -s -m 2 %s', url))
         if not handle then
             logger:log(1, "[INVENTORY] Failed to fetch inventory queue")
             return

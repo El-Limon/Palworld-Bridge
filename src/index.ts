@@ -371,6 +371,10 @@ const MAX_RECONNECT_DELAY = 60000; // 60 seconds
 const BASE_RECONNECT_DELAY = 3000; // 3 seconds
 let identifyFailures = 0;
 const IDENTIFY_FAILURE_HINT_AFTER = 5; // loud config hint after this many failures
+// The mod polls its request queues one after another on a single UE4SS
+// thread, each through a spawned curl. A slow spawn delays the other polls by
+// several seconds, so a reply can arrive after 5 s even when nothing failed.
+const MOD_REPLY_TIMEOUT_MS = 10000;
 const SERVER_CHECK_INTERVAL = 5000; // Check server every 5 seconds
 const SERVER_PROBE_TIMEOUT = 2000; // REST /v1/api/info probe timeout
 let loggedProcessUpRestDown = false;
@@ -1658,7 +1662,7 @@ async function handleGetPlayerLocation(args: any) {
     logger.debug(`[LOCATION] Queued request ${requestId} for ${cachedPlayer.name} (${playerId})`);
 
     // Wait for response from Lua (with timeout)
-    const timeout = 5000;
+    const timeout = MOD_REPLY_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
@@ -1759,7 +1763,7 @@ async function handleGetPlayerInventory(args: any) {
     logger.info(`[INVENTORY] Queued request ${requestId} for ${player.name}`);
 
     // Wait for the Lua to enumerate and respond (with timeout).
-    const timeout = 5000;
+    const timeout = MOD_REPLY_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
@@ -1891,7 +1895,7 @@ async function handleGiveItem(args: any) {
     logger.info(`[ITEMS] Queued request ${requestId}: Give ${quantity}x ${itemId} to ${player.name}`);
 
     // Wait for response from Lua (with timeout)
-    const timeout = 5000;
+    const timeout = MOD_REPLY_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {

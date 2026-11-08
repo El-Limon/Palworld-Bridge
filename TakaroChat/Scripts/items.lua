@@ -19,7 +19,7 @@ local function FetchItemRequests()
         end
 
         local url = string.format('http://%s/item-queue', bridgeHost)
-        local command = string.format('curl -s %s', url)
+        local command = string.format('curl -s -m 2 %s', url)
         local handle = io.popen(command)
         if not handle then
             logger:log(1, "[ITEMS] Failed to fetch item queue")

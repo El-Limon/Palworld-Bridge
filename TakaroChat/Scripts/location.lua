@@ -21,7 +21,7 @@ local function FetchLocationRequests()
         end
 
         local url = string.format('http://%s/location-queue', bridgeHost)
-        local command = string.format('curl -s %s', url)
+        local command = string.format('curl -s -m 2 %s', url)
         local handle = io.popen(command)
         if not handle then
             logger:log(1, "[LOCATION] Failed to fetch location queue")
