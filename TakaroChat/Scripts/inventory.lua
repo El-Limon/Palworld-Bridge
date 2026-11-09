@@ -44,9 +44,11 @@ local logger = Utils.Logger:new()
 local Inventory = {}
 
 -- Enumerate a player's inventory into a { [code] = count } table.
--- Never throws; returns an empty table on any failure.
+-- Never throws. The second result tells a really empty inventory from one that
+-- could not be read.
 local function EnumeratePlayerInventory(playerState)
     local items = {}
+    local readable = false
 
     local ok, err = pcall(function()
         -- Same resolution as the working give path (items.lua / dkoz AdminCommands).
@@ -74,6 +76,7 @@ local function EnumeratePlayerInventory(playerState)
             return
         end
 
+        readable = true
         containers:ForEach(function(_, containerWrapper)
             local container = containerWrapper:get()
             if not (container and container:IsValid()) then
@@ -106,10 +109,11 @@ local function EnumeratePlayerInventory(playerState)
     end)
 
     if not ok then
+        readable = false
         logger:log(1, "[INVENTORY] enumeration error: " .. tostring(err))
     end
 
-    return items
+    return items, readable
 end
 
 -- Build the JSON items array from a { [code] = count } table.
@@ -122,15 +126,42 @@ local function ItemsToJson(items)
     return "[" .. table.concat(parts, ",") .. "]"
 end
 
+-- Character facts that ride along on the inventory reply, so they cost no extra pass.
+-- Takaro asks for the inventory right before the progression on every player sync.
+--   exp        -> FPalIndividualCharacterSaveParameter.Exp
+--   instanceId -> FPalInstanceID.InstanceId, the id of this character in the save
+-- Returns the extra JSON fields, or "" when nothing could be read.
+local factsReadFailed = false
+local function ReadCharacterFactsJson(player)
+    local parts = {}
+    local ok, err = pcall(function()
+        local param = player.CharacterParameterComponent.IndividualParameter
+        local exp = param.SaveParameter.Exp
+        if type(exp) == "number" then
+            table.insert(parts, string.format('"exp":%d', exp))
+        end
+        local id = param.IndividualId.InstanceId
+        table.insert(parts, string.format('"instanceId":"%08X%08X%08X%08X"',
+            id.A & 0xFFFFFFFF, id.B & 0xFFFFFFFF, id.C & 0xFFFFFFFF, id.D & 0xFFFFFFFF))
+    end)
+    if not ok and not factsReadFailed then
+        factsReadFailed = true
+        logger:log(1, "[INVENTORY] Could not read character facts: " .. tostring(err))
+    end
+    if #parts == 0 then return "" end
+    return "," .. table.concat(parts, ",")
+end
+
 -- POST an inventory response back to the bridge (always sent, even when empty,
 -- so the bridge can clear the pending request).
-local function SendInventoryResponse(bridgeHost, requestId, playerName, itemsJson)
+local function SendInventoryResponse(bridgeHost, requestId, playerName, itemsJson, factsJson)
     local json = string.format(
-        '{"requestId":"%s","name":"%s","items":%s,"timestamp":"%s"}',
+        '{"requestId":"%s","name":"%s","items":%s,"timestamp":"%s"%s}',
         requestId,
         Utils.EscapeJSON(playerName),
         itemsJson,
-        os.date("!%Y-%m-%dT%H:%M:%SZ")
+        os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        factsJson or ""
     )
 
     local jsonEscaped = json:gsub('"', '\\"')
@@ -164,7 +195,7 @@ local function FetchInventoryRequests()
         end
 
         local url = string.format('http://%s/inventory-queue', bridgeHost)
-        local handle = io.popen(string.format('curl -s %s', url))
+        local handle = io.popen(string.format('curl -s -m 2 %s', url))
         if not handle then
             logger:log(1, "[INVENTORY] Failed to fetch inventory queue")
             return
@@ -181,7 +212,9 @@ local function FetchInventoryRequests()
             logger:log(2, string.format("[INVENTORY] Processing request %s for player %s", requestId, playerName))
 
             local items = {}
+            local factsJson = ""
             local playerFound = false
+            local readable = false
 
             local PlayersList = FindAllOf("PalPlayerCharacter")
             if PlayersList then
@@ -200,7 +233,8 @@ local function FetchInventoryRequests()
                     if extractOk and matchName and matchState and
                        matchName:lower() == playerName:lower() then
                         playerFound = true
-                        items = EnumeratePlayerInventory(matchState)
+                        items, readable = EnumeratePlayerInventory(matchState)
+                        factsJson = ReadCharacterFactsJson(Player)
                         break
                     end
                 end
@@ -212,12 +246,16 @@ local function FetchInventoryRequests()
                 logger:log(1, string.format("[INVENTORY] Player '%s' not found online", playerName))
             end
 
-            -- Always reply (empty array when not found / no items) to clear the request.
+            -- Always reply, to clear the request. found:false tells the bridge this
+            -- is no reading at all, not an empty inventory.
+            if not readable then
+                factsJson = factsJson .. ',"found":false'
+            end
             local itemsJson = ItemsToJson(items)
             local count = 0
             for _ in pairs(items) do count = count + 1 end
             logger:log(2, string.format("[INVENTORY] Player %s: %d item stack(s)", playerName, count))
-            SendInventoryResponse(bridgeHost, requestId, playerName, itemsJson)
+            SendInventoryResponse(bridgeHost, requestId, playerName, itemsJson, factsJson)
         end
     end)
 

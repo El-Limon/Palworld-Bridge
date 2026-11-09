@@ -21,7 +21,7 @@ local function FetchLocationRequests()
         end
 
         local url = string.format('http://%s/location-queue', bridgeHost)
-        local command = string.format('curl -s %s', url)
+        local command = string.format('curl -s -m 2 %s', url)
         local handle = io.popen(command)
         if not handle then
             logger:log(1, "[LOCATION] Failed to fetch location queue")
@@ -54,10 +54,10 @@ local function FetchLocationRequests()
                             if success and availableName then
                                 logger:log(2, string.format("[LOCATION]   - '%s'", availableName))
                             else
-                                logger:log(1, "[LOCATION] WARNING: Player has invalid PlayerState")
+                                logger:log(3, "[LOCATION] Skipping a pawn without a PlayerState")
                             end
                         else
-                            logger:log(1, "[LOCATION] WARNING: Player object is invalid")
+                            logger:log(3, "[LOCATION] Skipping an invalid pawn")
                         end
                     end
 

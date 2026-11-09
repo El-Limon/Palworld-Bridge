@@ -201,11 +201,13 @@ Everything Takaro's Generic game server can ask for, and what the bridge does wi
 | `getPlayer` | yes | Single player lookup by `gameId`; `null` when not online |
 | `getPlayerLocation` | yes | Needs the `TakaroChat` UE4SS mod; `null` (not `0,0,0`) on failure; on protocol 1 also when the mod finds no pawn for the player (for example while they leave); also `null` while a joining player's save loads and for 10 s after, so the temporary spawn point on Palpagos is never reported |
 | `getPlayerInventory` | yes | Needs the UE4SS mod and `EnableInventoryTracking` |
-| `sendMessage` | yes | Mapped to the REST `announce` endpoint |
+| `getPlayerProgression` | yes | Protocol v1. The character level comes from the REST player list, so it needs no mod; `experience` is added when the UE4SS mod and `EnableInventoryTracking` are on |
+| Characters | Hardcore servers only | With `bHardcore` a death deletes the character, so the bridge declares `players.characters` and reports the save's character id. Needs the UE4SS mod and a Takaro version with Characters support. Normal servers have one character per account and declare nothing |
+| `sendMessage` | yes, to everyone | Mapped to the REST `announce` endpoint. Game limit: Palworld has no private messages, so a message meant for one player (a whisper or a module reply) is shown to every player |
 | `executeConsoleCommand` | yes | See the console command table above |
 | `giveItem` | yes | Needs the UE4SS mod; Palworld has no item quality tiers |
 | `teleportPlayer` | yes | Needs the UE4SS mod; coordinates or another player |
-| `kickPlayer` / `banPlayer` / `unbanPlayer` | yes | Takaro's reason is used as the in-game message |
+| `kickPlayer` / `banPlayer` / `unbanPlayer` | yes | Takaro's reason is used as the in-game message; a timed ban is lifted by the bridge when it expires |
 | `listBans` | yes | Bans the bridge issued (see below) |
 | `listItems` | yes | 1891 item catalog |
 | `shutdown` | yes | REST `/v1/api/shutdown` with a 10 second countdown |

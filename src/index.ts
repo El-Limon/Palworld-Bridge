@@ -14,8 +14,12 @@ import { items as PALWORLD_ITEMS, itemCodes as PALWORLD_ITEM_CODES } from './emb
 const PALWORLD_ITEM_NAMES = new Map<string, string>(PALWORLD_ITEMS.map((i) => [i.code, i.name]));
 import { resolvePlayerId, resolveTargetPlayerId, resolveUnbanGameId, describeArgs, palworldIdentity, takaroPing } from './player-args';
 import { resolveTakaroWsUrl } from './takaro-url';
-import { buildManifest, EventStream, identifyError, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, v1ErrorFor } from './protocol-v1';
+import { buildManifest, EventStream, IDENTIFY_TIMEOUT_MS, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, MAP_DIMENSIONS, negotiatedVersion, resolveProtocolSetting, takaroWentSilent, v1ErrorFor, WS_OPTIONS } from './protocol-v1';
 import { JoinLoadTracker } from './join-spawn';
+import { noteRestLevel, progressionAnswer, ProgressionState } from './progression';
+import { CharacterTracker, hardcoreSetting } from './characters';
+import { expiredBans } from './ban-expiry';
+import { ServerProbeFilter } from './server-status';
 
 const execPromise = promisify(exec);
 
@@ -356,14 +360,21 @@ const eventStream = new EventStream();
 // Palworld API client
 let palworldApi: AxiosInstance;
 let isServerRunning = false;
+const serverProbes = new ServerProbeFilter();
 let serverCheckInterval: NodeJS.Timeout | null = null;
 
 // Reconnection state
 let reconnectAttempts = 0;
+let identifyTimer: NodeJS.Timeout | undefined;
+let lastTakaroFrameAt = Date.now();
 const MAX_RECONNECT_DELAY = 60000; // 60 seconds
 const BASE_RECONNECT_DELAY = 3000; // 3 seconds
 let identifyFailures = 0;
 const IDENTIFY_FAILURE_HINT_AFTER = 5; // loud config hint after this many failures
+// The mod polls its request queues one after another on a single UE4SS
+// thread, each through a spawned curl. A slow spawn delays the other polls by
+// several seconds, so a reply can arrive after 5 s even when nothing failed.
+const MOD_REPLY_TIMEOUT_MS = 10000;
 const SERVER_CHECK_INTERVAL = 5000; // Check server every 5 seconds
 const SERVER_PROBE_TIMEOUT = 2000; // REST /v1/api/info probe timeout
 let loggedProcessUpRestDown = false;
@@ -380,6 +391,10 @@ const playerInventories = new Map<string, PlayerInventory>();
 let lastKnownPlayers = new Set<string>();
 let hasInitializedPlayerList = false; // Track if we've done first poll
 const playerCache = new Map<string, { gameId: string; name: string; accountName: string; palworldPlayerId: string; steamId?: string; xboxLiveId?: string; platformId?: string }>();
+const playerProgression = new Map<string, ProgressionState>();
+const characters = new CharacterTracker();
+// What this connection declared; a change of bHardcore needs a new identify.
+let declaredHardcore = false;
 // Remembers who is still loading in, so no join spawn position is reported (see join-spawn.ts).
 const joinLoad = new JoinLoadTracker();
 
@@ -452,7 +467,12 @@ interface InventoryReadResponse {
   name: string;
   items: InventoryReadItem[];
   timestamp: string;
+  /** false when the mod could not read the inventory; absent on older mods. */
+  found?: boolean;
+  exp?: number;
+  instanceId?: string;
 }
+const CHARACTER_FACTS_PREFIX = 'facts_';
 const inventoryRequestQueue: InventoryReadRequest[] = [];
 const inventoryResponseQueue: InventoryReadResponse[] = [];
 
@@ -541,6 +561,10 @@ app.post('/chat', async (req, res) => {
     // Handle different event types
     switch (type) {
       case 'chat':
+        if (!isPlayerChat(message)) {
+          logger.debug(`[CHAT] Ignored empty line from ${playerName}`);
+          break;
+        }
         logger.info(`[CHAT] [${categoryName || category}] ${playerName}: ${message}`);
         if (isConnectedToTakaro) {
           await sendChatEvent({
@@ -566,8 +590,9 @@ app.post('/chat', async (req, res) => {
       case 'player_death':
         logger.info(`[EVENT] Player died: ${playerName}`);
         if (isConnectedToTakaro) {
-          await sendPlayerEvent('player-death', playerName, timestamp);
+          await sendPlayerEvent('player-death', playerName, timestamp, undefined, charactersDeclared() ? { characterEnded: true } : {});
         }
+        if (charactersDeclared()) endCharacterOf(playerName);
         break;
 
       case 'inventory':
@@ -674,7 +699,14 @@ app.get('/inventory-queue', (req, res) => {
 app.post('/inventory-response', (req, res) => {
   try {
     const response: InventoryReadResponse = req.body;
-    inventoryResponseQueue.push(response);
+    if (String(response.requestId).startsWith(CHARACTER_FACTS_PREFIX)) {
+      // Nobody waits for this reply, so nobody else takes it off the queue the mod polls.
+      const queued = inventoryRequestQueue.findIndex((r) => r.requestId === response.requestId);
+      if (queued !== -1) inventoryRequestQueue.splice(queued, 1);
+    } else {
+      inventoryResponseQueue.push(response);
+    }
+    recordCharacterFacts(response);
     logger.debug(`[INVENTORY] Received response for ${response.name}: ${(response.items || []).length} item stack(s)`);
     res.status(200).json({ success: true });
   } catch (error: any) {
@@ -721,6 +753,11 @@ async function sendChatEvent(chatData: any) {
     // If player not in cache, trigger refresh and skip this event
     // This prevents sending invalid gameId (player name) to Takaro
     if (!player) {
+      // Every announce comes back through the chat hook from this sender.
+      if (chatData.playerName === 'SYSTEM') {
+        logger.debug(`[CHAT] Ignored server line: ${chatData.message}`);
+        return;
+      }
       logger.warn(`Player ${chatData.playerName} not in cache yet, skipping chat event. Triggering player refresh.`);
       // Trigger immediate player list refresh to update cache
       handleGetPlayers().catch(err => logger.error(`Error refreshing players: ${err.message}`));
@@ -742,7 +779,8 @@ async function sendChatEvent(chatData: any) {
           player: {
             name: player.name,
             gameId: player.gameId,
-            ...palworldIdentity(player.gameId)
+            ...palworldIdentity(player.gameId),
+            ...characterField(player.gameId)
           },
           channel: channel
         }
@@ -760,7 +798,7 @@ async function sendChatEvent(chatData: any) {
 /**
  * Send player event to Takaro (connect/disconnect/death)
  */
-async function sendPlayerEvent(eventType: string, playerName: string, timestamp?: string, gameId?: string) {
+async function sendPlayerEvent(eventType: string, playerName: string, timestamp?: string, gameId?: string, extra: Record<string, unknown> = {}) {
   try {
     // Use provided gameId or look up in cache
     let player: any = null;
@@ -794,8 +832,10 @@ async function sendPlayerEvent(eventType: string, playerName: string, timestamp?
           player: {
             name: String(player.name),
             gameId: String(player.gameId),
-            ...palworldIdentity(String(player.gameId))
-          }
+            ...palworldIdentity(String(player.gameId)),
+            ...characterField(String(player.gameId))
+          },
+          ...extra
         }
       }
     };
@@ -855,16 +895,28 @@ function connectToTakaro() {
   }
 
   logger.info(`Connecting to Takaro at ${TAKARO_WS_URL} (attempt ${reconnectAttempts + 1})`);
-  takaroWs = new WebSocket(TAKARO_WS_URL);
+  const socket = new WebSocket(TAKARO_WS_URL, WS_OPTIONS);
+  takaroWs = socket;
 
   takaroWs.on('open', () => {
     logger.info('Connected to Takaro WebSocket');
     // reconnectAttempts is reset on a *successful* identify, not merely on a
     // TCP connect, so a repeatedly rejected identify still backs off properly.
-    sendIdentify();
+    refreshHardcore().finally(sendIdentify);
+    clearTimeout(identifyTimer);
+    identifyTimer = setTimeout(() => {
+      logger.warn('Takaro did not answer the identify in time, reconnecting');
+      socket.terminate();
+    }, IDENTIFY_TIMEOUT_MS);
+  });
+
+  // Takaro's heartbeat is a WebSocket ping, not a message; a quiet but healthy link only shows these.
+  takaroWs.on('ping', () => {
+    lastTakaroFrameAt = Date.now();
   });
 
   takaroWs.on('message', (data: WebSocket.Data) => {
+    lastTakaroFrameAt = Date.now();
     try {
       logWsFrame('RECV', data.toString());
       const message = JSON.parse(data.toString());
@@ -875,8 +927,9 @@ function connectToTakaro() {
     }
   });
 
-  takaroWs.on('close', () => {
-    logger.warn('Disconnected from Takaro');
+  takaroWs.on('close', (code, reason) => {
+    logger.warn(`Disconnected from Takaro (code ${code}${reason.length ? `, ${reason.toString()}` : ''})`);
+    clearTimeout(identifyTimer);
     isConnectedToTakaro = false;
     protocolVersion = 0;
     scheduleReconnect();
@@ -909,7 +962,8 @@ function sendIdentify() {
 
   if (TAKARO_PROTOCOL === 1) {
     identifyMessage.payload.protocolVersions = [0, 1];
-    identifyMessage.payload.capabilities = buildManifest();
+    declaredHardcore = serverHardcore === true;
+    identifyMessage.payload.capabilities = buildManifest(declaredHardcore);
   }
 
   logger.info('Sending identify message to Takaro');
@@ -924,6 +978,7 @@ function sendIdentify() {
 function handleTakaroMessage(message: any) {
   switch (message.type) {
     case 'identifyResponse':
+      clearTimeout(identifyTimer);
       handleIdentifyResponse(message);
       break;
 
@@ -991,6 +1046,7 @@ function handleIdentifyResponse(message: any) {
       logger.debug(`Failed to close socket after identify failure: ${error.message}`);
     }
   } else {
+    lastTakaroFrameAt = Date.now();
     protocolVersion = negotiatedVersion(message);
     logger.info(`Successfully identified with Takaro (protocol version ${protocolVersion}${protocolVersion === 1 ? `, map Dimensions ${MAP_DIMENSIONS.map((d) => d.id).join(', ')}` : ''})`);
     isConnectedToTakaro = true;
@@ -1097,6 +1153,10 @@ async function handleTakaroRequest(message: any) {
 
       case 'getPlayerLocation':
         responsePayload = await handleGetPlayerLocation(args);
+        break;
+
+      case 'getPlayerProgression':
+        responsePayload = handleGetPlayerProgression(args);
         break;
 
       case 'getPlayerInventory':
@@ -1229,7 +1289,7 @@ async function checkServerStatus() {
     loggedProcessUpRestDown = false;
   }
 
-  isServerRunning = restUp;
+  isServerRunning = serverProbes.note(restUp);
 
   if (isServerRunning !== wasRunning) {
     logger.info(`Palworld server status changed: ${isServerRunning ? 'ONLINE' : 'OFFLINE'}`);
@@ -1259,6 +1319,68 @@ function startServerMonitoring() {
 /**
  * Get current players from Palworld server
  */
+let serverHardcore: boolean | null = null;
+
+function charactersDeclared(): boolean {
+  return protocolVersion === 1 && declaredHardcore;
+}
+
+/** The `character` of a player payload, on servers that declare Characters. */
+function characterField(gameId: string): { character?: { id: string; name: string } } {
+  const character = charactersDeclared() ? characters.get(gameId) : undefined;
+  return character ? { character } : {};
+}
+
+/** Reads bHardcore. A failed read keeps the last known value. */
+async function refreshHardcore(): Promise<void> {
+  try {
+    const value = hardcoreSetting((await palworldApi.get('/v1/api/settings')).data);
+    if (value !== null) serverHardcore = value;
+  } catch (error: any) {
+    logger.debug(`[CHARACTERS] Could not read the server settings: ${error.message}`);
+  }
+}
+
+/** The deleted character must not linger in the next one's experience. */
+function endCharacterOf(playerName: string) {
+  for (const player of playerCache.values()) {
+    if (player.name !== playerName && player.accountName !== playerName) continue;
+    characters.end(player.gameId);
+    playerProgression.set(player.gameId, {});
+  }
+}
+
+/** Asks the mod for the character facts without waiting; the reply lands in recordCharacterFacts. */
+function requestCharacterFacts(accountName: string) {
+  if (inventoryRequestQueue.some((r) => r.name === accountName && r.requestId.startsWith(CHARACTER_FACTS_PREFIX))) return;
+  inventoryRequestQueue.push({
+    name: accountName,
+    requestId: `${CHARACTER_FACTS_PREFIX}${Date.now()}`,
+    timestamp: new Date().toISOString()
+  });
+}
+
+/** Keeps what the mod read from the character alongside its inventory reply. */
+function recordCharacterFacts(response: InventoryReadResponse) {
+  for (const player of playerCache.values()) {
+    if (player.accountName !== response.name) continue;
+    const state = playerProgression.get(player.gameId) ?? {};
+    if (typeof response.exp === 'number') state.experience = response.exp;
+    playerProgression.set(player.gameId, state);
+    // The temporary pawn of a joining player is not the character.
+    if (joinLoad.hasLoadedPosition(player.gameId, player.palworldPlayerId)) {
+      characters.note(player.gameId, response.instanceId, player.name);
+    }
+    logger.debug(`[PROGRESSION] ${player.name}: exp=${response.exp} instanceId=${response.instanceId}`);
+  }
+}
+
+/** Answers from the values the player poll keeps; Takaro asks on every sync. */
+function handleGetPlayerProgression(args: any) {
+  const parsed = typeof args === 'string' ? JSON.parse(args) : args;
+  return progressionAnswer(playerProgression.get(String(parsed?.gameId ?? '')));
+}
+
 async function handleGetPlayers(detectChanges: boolean = false, throwOnError: boolean = false) {
   try {
     const authString = Buffer.from(`${PALWORLD_USERNAME}:${PALWORLD_PASSWORD}`).toString('base64');
@@ -1288,8 +1410,16 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
       palworldPlayerId: String(player.playerId || ''), // GUID from Palworld API - matches PlayerState.PlayerId in UE4SS
       ip: player.ip || undefined,
       ping: takaroPing(player.ping),
-      ...joinLoad.restPosition(player)
+      ...joinLoad.restPosition(player),
+      ...characterField(String(player.userId))
     }));
+
+    for (const player of players) {
+      const gameId = String(player.userId);
+      const state = playerProgression.get(gameId) ?? {};
+      noteRestLevel(state, player, joinLoad.hasLoadedPosition(gameId, player.playerId));
+      playerProgression.set(gameId, state);
+    }
 
     // Always cache player data (including accountName for Lua communication and palworldPlayerId for matching)
     for (const player of mappedPlayers) {
@@ -1307,6 +1437,12 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
         // Detect new players (connected)
         for (const player of mappedPlayers) {
           if (!lastKnownPlayers.has(player.gameId)) {
+            const loaded = joinLoad.hasLoadedPosition(player.gameId, player.palworldPlayerId);
+            if (charactersDeclared() && !characters.readyToAnnounce(player.gameId, loaded, Date.now())) {
+              if (loaded) requestCharacterFacts(player.accountName);
+              currentPlayers.delete(player.gameId);
+              continue;
+            }
             logger.info(`[CONNECT DETECTED] Player joined: ${player.name} (gameId: ${player.gameId})`);
             await sendPlayerEvent('player-connected', player.name, new Date().toISOString(), player.gameId);
           }
@@ -1319,6 +1455,7 @@ async function handleGetPlayers(detectChanges: boolean = false, throwOnError: bo
             const playerName = cachedPlayer ? cachedPlayer.name : lastPlayerId;
             logger.info(`[DISCONNECT DETECTED] Player left: ${playerName} (gameId: ${lastPlayerId})`);
             await sendPlayerEvent('player-disconnected', playerName, new Date().toISOString(), lastPlayerId);
+            characters.forget(lastPlayerId);
           }
         }
       } else {
@@ -1530,7 +1667,7 @@ async function handleGetPlayerLocation(args: any) {
     logger.debug(`[LOCATION] Queued request ${requestId} for ${cachedPlayer.name} (${playerId})`);
 
     // Wait for response from Lua (with timeout)
-    const timeout = 5000;
+    const timeout = MOD_REPLY_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
@@ -1610,7 +1747,13 @@ async function handleGetPlayerInventory(args: any) {
 
     if (!player) {
       logger.warn(`[INVENTORY] Player ${playerId} not found for inventory lookup`);
-      return [];
+      return inventoryUnknown(`Player ${playerId} is not online`, protocolVersion);
+    }
+
+    // The temporary pawn of a joining player has an empty inventory.
+    if (!joinLoad.hasLoadedPosition(player.gameId, player.palworldPlayerId)) {
+      logger.debug(`[INVENTORY] ${player.name} is still loading in`);
+      return inventoryUnknown(`${player.name} is still loading in`, protocolVersion);
     }
 
     const playerName = player.accountName; // Matches PlayerNamePrivate in Lua
@@ -1625,7 +1768,7 @@ async function handleGetPlayerInventory(args: any) {
     logger.info(`[INVENTORY] Queued request ${requestId} for ${player.name}`);
 
     // Wait for the Lua to enumerate and respond (with timeout).
-    const timeout = 5000;
+    const timeout = MOD_REPLY_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
@@ -1638,6 +1781,10 @@ async function handleGetPlayerInventory(args: any) {
         const queueIndex = inventoryRequestQueue.findIndex(r => r.requestId === requestId);
         if (queueIndex !== -1) {
           inventoryRequestQueue.splice(queueIndex, 1);
+        }
+
+        if (response.found === false) {
+          return inventoryUnknown(`The mod could not read the inventory of ${player.name}`, protocolVersion);
         }
 
         const rows = Array.isArray(response.items) ? response.items : [];
@@ -1664,16 +1811,16 @@ async function handleGetPlayerInventory(args: any) {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    // Timeout - clean up the pending request and return empty (not an error).
+    // Timeout - clean up the pending request.
     const queueIndex = inventoryRequestQueue.findIndex(r => r.requestId === requestId);
     if (queueIndex !== -1) {
       inventoryRequestQueue.splice(queueIndex, 1);
     }
     logger.warn(`[INVENTORY] Timeout waiting for inventory response for ${player.name}`);
-    return [];
+    return inventoryUnknown(`Timed out reading the inventory of ${player.name}`, protocolVersion);
   } catch (error: any) {
     logger.error(`[INVENTORY] Failed to get player inventory: ${error.message}`);
-    return [];
+    return inventoryUnknown(`Could not read the inventory: ${error.message}`, protocolVersion);
   }
 }
 
@@ -1753,7 +1900,7 @@ async function handleGiveItem(args: any) {
     logger.info(`[ITEMS] Queued request ${requestId}: Give ${quantity}x ${itemId} to ${player.name}`);
 
     // Wait for response from Lua (with timeout)
-    const timeout = 5000;
+    const timeout = MOD_REPLY_TIMEOUT_MS;
     const startTime = Date.now();
 
     while (Date.now() - startTime < timeout) {
@@ -2263,10 +2410,7 @@ async function handleBanPlayer(args: any) {
   }
 
   // Palworld's REST /v1/api/ban takes only { userid, message } -- there is no expiry
-  // parameter, so a temporary ban from Takaro becomes a permanent in-game ban.
-  if (banArgs?.expiresAt) {
-    logger.warn(`[BAN] Palworld's REST API has no ban expiry; ${userId} is banned permanently in-game (expiresAt ${banArgs.expiresAt} is only tracked by Takaro)`);
-  }
+  // parameter, so the poll below lifts a temporary ban when its expiresAt has passed.
 
   try {
     const authString = Buffer.from(`${PALWORLD_USERNAME}:${PALWORLD_PASSWORD}`).toString('base64');
@@ -2629,6 +2773,23 @@ connectToTakaro();
 let pollCount = 0;
 setInterval(async () => {
   pollCount++;
+  for (const record of expiredBans(banLedger.values(), Date.now())) {
+    logger.info(`[BAN] Lifting the expired ban of ${record.gameId}`);
+    await handleUnbanPlayer({ gameId: record.gameId });
+  }
+  if (isConnectedToTakaro && takaroWentSilent(lastTakaroFrameAt, Date.now())) {
+    logger.info('No message from Takaro for two minutes, reconnecting');
+    takaroWs?.terminate();
+    return;
+  }
+  if (isConnectedToTakaro && pollCount % 6 === 0) {
+    await refreshHardcore();
+    if (serverHardcore !== null && serverHardcore !== declaredHardcore && protocolVersion === 1) {
+      logger.info(`[CHARACTERS] bHardcore is now ${serverHardcore}, identifying again`);
+      takaroWs?.terminate();
+      return;
+    }
+  }
   if (isConnectedToTakaro) {
     logger.debug(`[POLL #${pollCount}] Checking for player changes...`);
     await handleGetPlayers(true); // Pass true to enable change detection

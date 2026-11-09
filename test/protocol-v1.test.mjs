@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
+import WebSocket from 'ws';
 import {
-  buildManifest, dimensionForPosition, EventStream, identifyError, locationAnswer, negotiatedVersion,
-  resolveProtocolSetting, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID,
+  buildManifest, dimensionForPosition, EventStream, identifyError, inventoryUnknown, isPlayerChat, locationAnswer, negotiatedVersion,
+  resolveProtocolSetting, takaroWentSilent, TAKARO_SILENCE_MS, v1ErrorFor, MAIN_DIMENSION_ID, TREE_DIMENSION_ID, WS_OPTIONS,
 } from '../dist/protocol-v1.js';
 
 const NAME = /^[a-z][a-zA-Z0-9]*(\.[a-z][a-zA-Z0-9-]*)*$/;
@@ -93,4 +95,33 @@ test('event stream: seq from 1, cumulative ack, resend set, drop oldest on overf
   for (const msg of ['d', 'e', 'f']) stream.push('chat-message', { msg });
   assert.deepEqual(stream.pending().map((e) => e.seq), [4, 5, 6], 'oldest dropped at capacity');
   assert.match(new EventStream().streamId, /^[A-Za-z0-9_-]{1,128}$/);
+});
+
+test('an unreadable inventory is never an empty one on version 1', () => {
+  assert.deepEqual(inventoryUnknown('timed out', 1), { error: 'timed out' });
+  assert.deepEqual(v1ErrorFor('getPlayerInventory', inventoryUnknown('timed out', 1), true), { code: 'game_error', message: 'timed out' });
+  assert.deepEqual(inventoryUnknown('timed out', 0), []);
+});
+
+test('empty lines are not player chat', () => {
+  assert.equal(isPlayerChat('hello'), true);
+  for (const message of ['', '   ', undefined, null]) assert.equal(isPlayerChat(message), false);
+});
+
+test('a server that accepts TCP but never upgrades still ends in close, so a retry gets scheduled', async () => {
+  assert.ok(WS_OPTIONS.handshakeTimeout > 0);
+  const silent = net.createServer(() => {});
+  await new Promise((resolve) => silent.listen(0, '127.0.0.1', resolve));
+  const socket = new WebSocket(`ws://127.0.0.1:${silent.address().port}/`, { ...WS_OPTIONS, handshakeTimeout: 100 });
+  socket.on('error', () => {});
+  await new Promise((resolve) => socket.on('close', resolve));
+  silent.close();
+  silent.unref();
+});
+
+test('two minutes without a frame from Takaro counts as a dead connection', () => {
+  assert.equal(takaroWentSilent(0, TAKARO_SILENCE_MS - 1), false);
+  assert.equal(takaroWentSilent(0, TAKARO_SILENCE_MS), true);
+  // Well above Takaro's 30 second player sync, so a healthy link never trips it.
+  assert.ok(TAKARO_SILENCE_MS >= 4 * 30_000);
 });

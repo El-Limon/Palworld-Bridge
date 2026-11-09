@@ -6,8 +6,30 @@
  * The bridge offers [0, 1]; a Takaro that answers no protocolVersion keeps version 0.
  */
 import { randomUUID } from 'crypto';
+import { CHARACTERS_CAPABILITY } from './characters';
 
 export type ProtocolErrorCode = 'unsupported' | 'invalid_args' | 'not_found' | 'game_error' | 'internal';
+
+/**
+ * A connection can open at the TCP level and then never finish the WebSocket upgrade. Without
+ * a handshake timeout neither `close` nor `error` ever fires, so no retry is scheduled and the
+ * bridge stays offline until someone restarts it.
+ */
+export const WS_OPTIONS = { handshakeTimeout: 15_000 };
+
+/** How long Takaro gets to answer an identify before the connection is dropped and retried. */
+export const IDENTIFY_TIMEOUT_MS = 20_000;
+
+/**
+ * Takaro pings a connected game server every 30 seconds (a WebSocket ping frame). A link can die
+ * without a close frame: Takaro then reports the server as not connected while this side still
+ * sees an open socket. Silence this long means the connection is gone.
+ */
+export const TAKARO_SILENCE_MS = 120_000;
+
+export function takaroWentSilent(lastFrameAt: number, now: number): boolean {
+  return now - lastFrameAt >= TAKARO_SILENCE_MS;
+}
 
 /** TAKARO_PROTOCOL=0 keeps the version 0 identify; anything else offers [0, 1]. */
 export function resolveProtocolSetting(value: string | undefined): 0 | 1 {
@@ -115,12 +137,29 @@ export function locationAnswer(
   return { x, y, z, dimension: dimensionForPosition(x, y) };
 }
 
+/**
+ * The getPlayerInventory answer when the inventory could not be read. An empty list means
+ * "this player owns nothing": Takaro would record every item as removed and then as added
+ * back on the next sync. On version 1 it is an error, so Takaro keeps what it knows.
+ * Version 0 keeps the old empty answer.
+ */
+export function inventoryUnknown(reason: string, protocolVersion: number): unknown[] | { error: string } {
+  return protocolVersion === 1 ? { error: reason } : [];
+}
+
+/** Palworld also broadcasts empty lines from a SYSTEM sender while a player joins. */
+export function isPlayerChat(message: unknown): boolean {
+  return typeof message === 'string' && message.trim() !== '';
+}
+
 export interface Capability { name: string; parameters?: Record<string, unknown> }
 
-export function buildManifest(): Capability[] {
+export function buildManifest(hardcore = false): Capability[] {
   return [
     ...ACTION_CAPABILITIES.map((name) => ({ name })),
     ...EVENT_CAPABILITIES.map((name) => ({ name })),
+    { name: 'players.progression', parameters: { source: 'server' } },
+    ...(hardcore ? [CHARACTERS_CAPABILITY] : []),
     { name: 'map', parameters: { dimensions: MAP_DIMENSIONS } },
   ];
 }
