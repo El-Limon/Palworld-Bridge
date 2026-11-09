@@ -203,7 +203,7 @@ Everything Takaro's Generic game server can ask for, and what the bridge does wi
 | `getPlayerInventory` | yes | Needs the UE4SS mod and `EnableInventoryTracking` |
 | `getPlayerProgression` | yes | Protocol v1. The character level comes from the REST player list, so it needs no mod; `experience` is added when the UE4SS mod and `EnableInventoryTracking` are on |
 | Characters | Hardcore servers only | With `bHardcore` a death deletes the character, so the bridge declares `players.characters` and reports the save's character id. Needs the UE4SS mod and a Takaro version with Characters support. Normal servers have one character per account and declare nothing |
-| `sendMessage` | yes | Mapped to the REST `announce` endpoint |
+| `sendMessage` | yes, to everyone | Mapped to the REST `announce` endpoint. Game limit: Palworld has no private messages, so a message meant for one player (a whisper or a module reply) is shown to every player |
 | `executeConsoleCommand` | yes | See the console command table above |
 | `giveItem` | yes | Needs the UE4SS mod; Palworld has no item quality tiers |
 | `teleportPlayer` | yes | Needs the UE4SS mod; coordinates or another player |
